@@ -36,6 +36,26 @@ def test_empty_download_returns_empty_bars(monkeypatch):
     assert df.empty and list(df.columns) == BAR_COLUMNS
 
 
+def test_sorts_and_normalizes_index(monkeypatch):
+    idx = pd.DatetimeIndex(["2024-01-03 09:30", "2024-01-02 09:30"], tz="America/New_York")
+    raw = pd.DataFrame(
+        {
+            "Open": [30.0, 20.0],
+            "High": [31.0, 21.0],
+            "Low": [29.0, 19.0],
+            "Close": [30.5, 20.5],
+            "Volume": [300.0, 200.0],
+        },
+        index=idx,
+    )
+    monkeypatch.setattr(mod.yf, "download", lambda *a, **k: raw)
+    df = mod.YFinancePriceProvider().get_daily_bars("AAPL", dt.date(2024, 1, 2), dt.date(2024, 1, 3))
+    assert df.index.is_monotonic_increasing
+    assert df.index.tz is None
+    assert (df.index == df.index.normalize()).all()
+    assert df["open"].tolist() == [20.0, 30.0]
+
+
 def test_end_date_is_inclusive(monkeypatch):
     captured = {}
 
