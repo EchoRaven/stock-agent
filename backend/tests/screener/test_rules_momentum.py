@@ -24,3 +24,11 @@ def test_uptrend_beats_downtrend():
     down = MomentumRule().evaluate(make_bars(days=60, base=500.0, step=-5.0))
     assert up.score > down.score
     assert down.score == pytest.approx(0.0)
+
+
+def test_flat_close_nan_rsi_scores_zero():
+    """横盘(无涨无跌)时 RSI 定义为 0/0 → NaN,不得让 NaN 悄悄穿透成脏分数。"""
+    bars = make_bars(days=35, base=100.0, step=0.0)
+    out = MomentumRule().evaluate(bars)
+    assert out.score == 0.0
+    assert out.detail == "nan inputs"
