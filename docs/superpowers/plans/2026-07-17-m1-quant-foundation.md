@@ -1707,8 +1707,8 @@ def test_equity_curve_tracks_position():
     eq = result.equity_curve
     assert len(eq) == 10
     assert eq.iloc[0] == pytest.approx(10_000.0)  # 首日只挂单未成交
-    # 期末:现金 10000-99*100.5=49.5,持仓 99 股 × 期末收盘 109
-    assert eq.iloc[-1] == pytest.approx(49.5 + 99 * 109.0)
+    # 期末:现金 10000-99*100.5=50.5,持仓 99 股 × 期末收盘 109
+    assert eq.iloc[-1] == pytest.approx(50.5 + 99 * 109.0)
     for key in ("total_return", "max_drawdown", "sharpe", "win_rate", "num_fills"):
         assert key in result.metrics
 
