@@ -32,3 +32,15 @@ def test_replay_unknown_symbol_returns_empty():
     p = ReplayPriceProvider({})
     p.set_as_of(dt.date(2024, 1, 5))
     assert p.get_daily_bars("NOPE", dt.date(2024, 1, 1), dt.date(2024, 1, 5)).empty
+
+
+def test_get_daily_bars_returns_defensive_copy():
+    """调用方拿到的 DataFrame 归自己所有,修改它不得影响内部存储和后续取数。"""
+    bars = make_bars(start="2024-01-01", days=10)
+    p = ReplayPriceProvider({"AAA": bars})
+    p.set_as_of(dt.date(2024, 1, 5))
+    first = p.get_daily_bars("AAA", dt.date(2024, 1, 1), dt.date(2024, 1, 5))
+    first.iloc[0, first.columns.get_loc("close")] = -999.0
+
+    second = p.get_daily_bars("AAA", dt.date(2024, 1, 1), dt.date(2024, 1, 5))
+    assert second.iloc[0]["close"] != -999.0

@@ -21,4 +21,4 @@ class ReplayPriceProvider(PriceProvider):
         if df is None or df.empty:
             return empty_bars()
         mask = (df.index.date >= start) & (df.index.date <= end)
-        return df.loc[mask]
+        return df.loc[mask].copy()

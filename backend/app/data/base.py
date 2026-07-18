@@ -16,4 +16,5 @@ class PriceProvider(ABC):
     @abstractmethod
     def get_daily_bars(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
         """返回 [start, end] 闭区间日线:升序 DatetimeIndex(无时区),
-        列为 open/high/low/close/volume。无数据时返回 empty_bars()。"""
+        列为 open/high/low/close/volume。无数据时返回 empty_bars()。
+        返回的 DataFrame 归调用方所有,实现方必须返回副本。"""
