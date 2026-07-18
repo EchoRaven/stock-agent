@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.data.sanitize import sanitize_text
+
 logger = logging.getLogger(__name__)
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -87,7 +89,7 @@ class EdgarFundamentalsProvider(FundamentalsProvider):
                 if e.get("form") not in VALID_FORMS or "end" not in e or "val" not in e:
                     continue
                 end = dt.date.fromisoformat(e["end"])
-                fiscal = f"{e.get('fp') or '?'}-{e.get('fy') or '?'}"
+                fiscal = sanitize_text(f"{e.get('fp') or '?'}-{e.get('fy') or '?'}", 20)
                 points[end] = FundamentalPoint(end, float(e["val"]), fiscal)  # 后出现覆盖(修正报)
             if points:
                 ordered = sorted(points.values(), key=lambda p: p.end, reverse=True)

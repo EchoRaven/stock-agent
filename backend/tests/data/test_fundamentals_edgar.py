@@ -88,6 +88,33 @@ def test_http_error_returns_empty(monkeypatch):
     assert out.revenue == () and out.net_income == () and out.eps == ()
 
 
+def test_fiscal_field_is_sanitized(monkeypatch):
+    """EDGAR fp/fy 原样拼进 fiscal 前必须先 sanitize_text(HTML 剥 + 截断),
+    因为它来自远端 JSON,并非受控常量。"""
+    overlong_fp = "<b>Q1</b>" + "x" * 30
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"USD": [
+                    {"end": "2026-03-31", "val": 30.0, "fy": 2026, "fp": overlong_fp,
+                     "form": "10-Q"},
+                ]}},
+            }
+        }
+    }
+
+    def fake_get(url, headers=None, timeout=None):
+        if url == mod.TICKERS_URL:
+            return FakeResponse(TICKERS)
+        return FakeResponse(facts)
+
+    monkeypatch.setattr(mod.httpx, "get", fake_get)
+    out = EdgarFundamentalsProvider(user_agent="ua").get_fundamentals("AAPL")
+    fiscal = out.revenue[0].fiscal
+    assert "<b>" not in fiscal and "</b>" not in fiscal
+    assert len(fiscal) <= 20
+
+
 @pytest.mark.network
 def test_edgar_real_fetch():
     """真实联网:pytest -m network 手动运行(UA 需带联系方式)。"""

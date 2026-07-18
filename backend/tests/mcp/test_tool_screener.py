@@ -44,3 +44,13 @@ def test_run_screener_returns_ranked_and_persists(factory):
 
 def test_output_json_serializable(factory):
     json.dumps(run_screener(top_n=2))
+
+
+def test_top_n_below_one_returns_error(factory):
+    out = run_screener(top_n=0)
+    assert out == {"status": "error", "error": "top_n must be >= 1"}
+
+
+def test_top_n_negative_returns_error(factory):
+    out = run_screener(top_n=-3)
+    assert out["status"] == "error"

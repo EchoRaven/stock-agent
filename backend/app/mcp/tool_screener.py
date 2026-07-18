@@ -13,6 +13,8 @@ def run_screener(top_n: int = 10) -> dict:
 
     返回 results(降序:rank/symbol/total/parts)与 skipped(抓取失败的标的)。
     """
+    if top_n < 1:
+        return {"status": "error", "error": "top_n must be >= 1"}
     settings = get_settings()
     as_of = dt.date.today()
     start = as_of - dt.timedelta(days=settings.lookback_days)

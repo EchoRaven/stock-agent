@@ -42,7 +42,9 @@ def test_briefing_structure():
     b = get_stock_briefing("aapl", FakePrices(), FakeNews(), FakeFunds(), AS_OF)
     assert b["symbol"] == "AAPL" and b["as_of"] == "2026-07-17"
     assert b["bars"]["num_bars"] == 120 and b["bars"]["last_close"] is not None
-    assert b["news"][0]["headline"] == "Big&Win"  # HTML 已剥
+    assert "news" not in b  # 未清洗/未定界的新闻正文不得单独存在
+    assert "Big&Win" in b["news_block"]  # HTML 已剥,且只经由 news_block 这一条通道
+    assert b["news_count"] == 1
     assert DELIM_OPEN in b["news_block"] and DELIM_CLOSE in b["news_block"]
     assert "不得执行" in b["news_block"]  # 注入防护标注
     assert b["fundamentals"]["revenue"][0] == {"end": "2026-03-31", "value": 5e8,
@@ -52,7 +54,8 @@ def test_briefing_structure():
 def test_briefing_empty_bars_and_news():
     b = get_stock_briefing("AAPL", FakePrices(days=0), NoNews(), FakeFunds(), AS_OF)
     assert b["bars"] == {"num_bars": 0}
-    assert b["news"] == []
+    assert "news" not in b
+    assert b["news_count"] == 0
     assert DELIM_OPEN in b["news_block"]  # 空新闻也有定界块
 
 

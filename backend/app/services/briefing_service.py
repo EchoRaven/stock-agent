@@ -76,8 +76,8 @@ def get_stock_briefing(
         "symbol": sym,
         "as_of": as_of.isoformat(),
         "bars": summarize_bars(bars_map.get(sym)),
-        "news": news,
         "news_block": news_block,
+        "news_count": len(news),
         "fundamentals": {
             "revenue": _points(funds.revenue),
             "net_income": _points(funds.net_income),
