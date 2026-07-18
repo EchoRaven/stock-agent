@@ -16,3 +16,22 @@ def make_bars(start="2024-01-01", days=10, base=100.0, step=1.0, volume=1_000_00
         },
         index=idx,
     )
+
+
+def make_decision_payload(**overrides):
+    """合法的委员会决定 payload(建议模式);字段可用 overrides 覆盖。"""
+    payload = {
+        "symbol": "AAPL",
+        "as_of": "2026-07-17",
+        "action": "buy",
+        "confidence": 0.8,
+        "committee": {
+            "technical": {"summary": "多头排列,站上 SMA20"},
+            "fundamental": {"summary": "营收与 EPS 连续增长"},
+            "sentiment": {"summary": "新闻面偏多"},
+            "bear": {"summary": "短期涨幅过大,存在回调风险"},
+        },
+        "chair": {"verdict": "小仓位买入", "bear_rebuttal": "回调风险由小仓位与止损覆盖"},
+    }
+    payload.update(overrides)
+    return payload
