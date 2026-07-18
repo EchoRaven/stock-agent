@@ -49,6 +49,16 @@ def test_single_position_cap():
     assert not out.allowed and "single-position cap" in out.reason
 
 
+def test_single_position_cap_exact_boundary_allowed():
+    # Pin exact-cap boundary: order value == equity * cap_pct must be ALLOWED.
+    # This test fails if `target > cap` is accidentally changed to `target >= cap`.
+    # equity=10 万, cap 20% = 2 万, buy 200 shares @ 100 = 2 万 exactly.
+    rule = SinglePositionCapRule()
+    order = _buy(shares=200, price=100.0)  # value = 20,000
+    out = rule.check(order, _account(), PARAMS)
+    assert out.allowed is True
+
+
 def test_single_position_cap_counts_existing_position():
     # equity=10 万,已持 1.5 万,再买 6 千 → 2.1 万 > 2 万
     acct = _account(cash=85_000.0, position_values={"AAPL": 15_000.0})
@@ -61,6 +71,18 @@ def test_total_position_cap():
     out = TotalPositionCapRule().check(_buy(shares=60, price=100.0), acct, PARAMS)
     assert not out.allowed and "total-position cap" in out.reason
     assert TotalPositionCapRule().check(_buy(shares=40, price=100.0), acct, PARAMS).allowed
+
+
+def test_total_position_cap_exact_boundary_allowed():
+    # Pin exact-cap boundary: total exposure == equity * cap_pct must be ALLOWED.
+    # This test fails if `target > cap` is accidentally changed to `target >= cap`.
+    # equity=10 万, existing position 6 万, cap 80% = 8 万.
+    # Buy 100 shares @ 200 = 2 万 more → total 8 万 exactly.
+    rule = TotalPositionCapRule()
+    acct = _account(cash=40_000.0, position_values={"MSFT": 60_000.0})
+    order = _buy(symbol="AAPL", shares=100, price=200.0)  # value = 20,000
+    out = rule.check(order, acct, PARAMS)
+    assert out.allowed is True
 
 
 def test_max_new_positions():
