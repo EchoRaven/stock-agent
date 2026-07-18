@@ -32,6 +32,9 @@ def sanitize_text(text: str, max_len: int = MAX_LEN) -> str:
 
 
 def wrap_untrusted(text: str) -> str:
-    """定界包裹不可信文本;剥掉内容中伪造的定界符,防"提前收尾"逃逸。"""
-    inner = str(text or "").replace(DELIM_OPEN, "").replace(DELIM_CLOSE, "")
+    """定界包裹不可信文本;循环剥掉内容中伪造的定界符直到稳定,
+    防单轮 replace 后由嵌套构造重新拼出定界符的"提前收尾"逃逸。"""
+    inner = str(text or "")
+    while DELIM_OPEN in inner or DELIM_CLOSE in inner:
+        inner = inner.replace(DELIM_OPEN, "").replace(DELIM_CLOSE, "")
     return f"{INJECTION_NOTICE}\n{DELIM_OPEN}\n{inner}\n{DELIM_CLOSE}"
