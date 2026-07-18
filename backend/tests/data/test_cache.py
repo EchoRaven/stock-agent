@@ -48,3 +48,15 @@ def test_subrange_served_from_cache(tmp_path):
     assert inner.calls == 1
     assert sub.index.min().date() >= dt.date(2024, 1, 3)
     assert sub.index.max().date() <= dt.date(2024, 1, 10)
+
+
+def test_disjoint_ranges_do_not_fake_coverage(tmp_path):
+    inner = CountingProvider(make_bars(start="2024-01-01", days=60))  # 至 2024-03-22
+    p = CachedPriceProvider(inner, tmp_path)
+    p.get_daily_bars("AAA", dt.date(2024, 1, 1), dt.date(2024, 1, 12))
+    p.get_daily_bars("AAA", dt.date(2024, 3, 11), dt.date(2024, 3, 15))
+    assert inner.calls == 2
+    full = p.get_daily_bars("AAA", dt.date(2024, 1, 1), dt.date(2024, 3, 15))
+    assert inner.calls == 3  # 缓存有缺口,必须回源,不得伪命中
+    expected = inner.get_daily_bars("AAA", dt.date(2024, 1, 1), dt.date(2024, 3, 15))
+    assert len(full) == len(expected)
