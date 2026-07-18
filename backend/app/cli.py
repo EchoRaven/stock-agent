@@ -11,6 +11,8 @@ from app.report.markdown import render_backtest_report, render_screen_report
 from app.screener.universe import load_universe
 from app.services.analysis_service import default_screener, run_screen_on_bars
 from app.services.market_data_service import fetch_bars
+from app.services.report_service import generate_daily_report
+from app.store.db import init_db, make_engine, make_session_factory
 
 
 def _positive_top_n(value: str) -> int:
@@ -21,7 +23,7 @@ def _positive_top_n(value: str) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="stock-agent", description="M1 量化底座 CLI")
+    parser = argparse.ArgumentParser(prog="stock-agent", description="量化底座 + M2 日报 CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     screen = sub.add_parser("screen", help="运行筛选器并输出报告")
@@ -36,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--max-positions", type=int, default=5)
     bt.add_argument("--universe", type=Path, default=None)
     bt.add_argument("--reports-dir", type=Path, default=None)
+
+    rep = sub.add_parser("report", help="生成当日(或指定日)盘后日报")
+    rep.add_argument("--date", type=dt.date.fromisoformat, default=None)
+    rep.add_argument("--reports-dir", type=Path, default=None)
     return parser
 
 
@@ -95,11 +101,33 @@ def cmd_backtest(args, provider=None) -> int:
     return 0
 
 
+def cmd_report(args, session=None) -> int:
+    """盘后日报(当日 signals + decisions 汇总):落库 + 写文件。薄壳,业务在 report_service。"""
+    settings = get_settings()
+    report_date = args.date or dt.date.today()
+    own_session = session is None
+    if own_session:
+        engine = make_engine(settings.db_path)
+        init_db(engine)
+        session = make_session_factory(engine)()
+    try:
+        text, path = generate_daily_report(session, report_date,
+                                           args.reports_dir or settings.reports_dir)
+    finally:
+        if own_session:
+            session.close()
+    print(text)
+    print(f"[report saved] {path}")
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
         return cmd_screen(args)
-    return cmd_backtest(args)
+    if args.command == "backtest":
+        return cmd_backtest(args)
+    return cmd_report(args)
 
 
 if __name__ == "__main__":

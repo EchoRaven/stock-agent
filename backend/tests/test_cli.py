@@ -2,9 +2,11 @@ import datetime as dt
 
 import pytest
 
-from app.cli import build_parser, cmd_backtest, cmd_screen
+from app.cli import build_parser, cmd_backtest, cmd_report, cmd_screen
 from app.data.base import PriceProvider
-from tests.helpers import make_bars
+from app.services.decision_service import submit_decision
+from app.store.db import init_db, make_engine, make_session_factory
+from tests.helpers import make_bars, make_decision_payload
 
 
 def _bars_covering(end: dt.date, base: float):
@@ -103,3 +105,24 @@ def test_top_zero_is_rejected_by_parser():
 def test_top_negative_is_rejected_by_parser():
     with pytest.raises(SystemExit):
         build_parser().parse_args(["screen", "--top", "-1"])
+
+
+def test_report_command(tmp_path, capsys):
+    engine = make_engine(":memory:")
+    init_db(engine)
+    with make_session_factory(engine)() as session:
+        submit_decision(session, make_decision_payload())
+        args = build_parser().parse_args(
+            ["report", "--date", "2026-07-17", "--reports-dir", str(tmp_path)])
+        assert cmd_report(args, session=session) == 0
+    files = list(tmp_path.glob("daily_*.md"))
+    assert len(files) == 1
+    out = capsys.readouterr().out
+    assert "AAPL" in out and "[report saved]" in out
+
+
+def test_report_rejects_bad_date():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["report", "--date", "not-a-date"])
