@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from app.screener.base import Rule, RuleResult, Screener, SymbolScore, clamp01
@@ -24,6 +26,10 @@ def test_clamp01():
     assert clamp01(-1) == 0.0
     assert clamp01(0.5) == 0.5
     assert clamp01(2.0) == 1.0
+
+
+def test_clamp01_nan_is_zero():
+    assert clamp01(float("nan")) == 0.0
 
 
 def test_weighted_total():
@@ -67,3 +73,21 @@ def test_empty_rules_rejected():
 def test_zero_weight_sum_rejected():
     with pytest.raises(ValueError):
         Screener([(FixedRule("a", 1.0), 0.0)])
+
+
+class NanRule(Rule):
+    name = "nan"
+
+    def evaluate(self, bars):
+        return RuleResult(float("nan"), "raw nan score")
+
+
+def test_nan_rule_score_does_not_poison_ranking():
+    """一个规则返回 NaN 分数不得污染 Screener 总分或排序(需 clamp01 先把 NaN 归零)。"""
+    s = Screener([(NanRule(), 1.0), (FixedRule("a", 1.0), 1.0)])
+    out = s.score_symbol("X", make_bars())
+    assert out.parts["nan"].score == 0.0
+    assert out.total == pytest.approx(0.5)
+
+    ranked = s.rank({"NANSYM": make_bars()}, top_n=1)
+    assert math.isfinite(ranked[0].total)

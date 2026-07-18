@@ -1,3 +1,4 @@
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -5,7 +6,11 @@ import pandas as pd
 
 
 def clamp01(x: float) -> float:
-    return min(max(float(x), 0.0), 1.0)
+    """把分数夹到 [0,1]。NaN 视为 0,防止一个 NaN 规则分污染总分与排序。"""
+    x = float(x)
+    if math.isnan(x):
+        return 0.0
+    return min(max(x, 0.0), 1.0)
 
 
 @dataclass(frozen=True)
