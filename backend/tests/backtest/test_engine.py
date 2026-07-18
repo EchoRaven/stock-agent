@@ -84,3 +84,12 @@ def test_empty_range_raises():
     with pytest.raises(ValueError):
         BacktestEngine(_bars(), ScriptedScreener(["AAA"]),
                        _cfg(start=dt.date(2030, 1, 1), end=dt.date(2030, 1, 5))).run()
+
+
+def test_config_validation():
+    with pytest.raises(ValueError):
+        _cfg(max_positions=0)
+    with pytest.raises(ValueError):
+        _cfg(start=dt.date(2024, 2, 1), end=dt.date(2024, 1, 1))
+    with pytest.raises(ValueError):
+        _cfg(initial_cash=0.0)

@@ -18,6 +18,14 @@ class BacktestConfig:
     lookback_days: int = 250
     slippage_bps: float = 5.0
 
+    def __post_init__(self) -> None:
+        if self.start > self.end:
+            raise ValueError("start must not be after end")
+        if self.initial_cash <= 0:
+            raise ValueError("initial_cash must be positive")
+        if self.max_positions < 1:
+            raise ValueError("max_positions must be >= 1")
+
 
 @dataclass(frozen=True)
 class BacktestResult:

@@ -40,7 +40,7 @@ class CachedPriceProvider(PriceProvider):
             return self._slice(cached, start, end)
         fetched = self._inner.get_daily_bars(symbol, start, end)
         merged = self._merge(cached, fetched)
-        if not merged.empty:
+        if not fetched.empty:
             merged.to_parquet(self._path(symbol))
             self._record_interval(symbol, start, end)
         return self._slice(merged, start, end)
@@ -64,6 +64,10 @@ class CachedPriceProvider(PriceProvider):
         return json.loads(path.read_text())
 
     def _record_interval(self, symbol: str, start: dt.date, end: dt.date) -> None:
+        # 当日抓到的可能是盘中的半根K线,不把今天记为已覆盖,当日重复查询总是回源
+        end = min(end, dt.date.today() - dt.timedelta(days=1))
+        if end < start:
+            return
         intervals = self._intervals(symbol)
         intervals.append([start.isoformat(), end.isoformat()])
         self._meta_path(symbol).write_text(json.dumps(_coalesce(intervals)))
