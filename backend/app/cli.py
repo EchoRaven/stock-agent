@@ -9,7 +9,15 @@ from app.data.cache import CachedPriceProvider
 from app.data.prices_yfinance import YFinancePriceProvider
 from app.report.markdown import render_backtest_report, render_screen_report
 from app.screener.universe import load_universe
-from app.services.analysis_service import default_screener, run_screen
+from app.services.analysis_service import default_screener, run_screen_on_bars
+from app.services.market_data_service import fetch_bars
+
+
+def _positive_top_n(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("--top must be >= 1")
+    return n
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     screen = sub.add_parser("screen", help="运行筛选器并输出报告")
     screen.add_argument("--universe", type=Path, default=None, help="股票池文件,缺省用内置池")
-    screen.add_argument("--top", type=int, default=None, help="输出前 N 名")
+    screen.add_argument("--top", type=_positive_top_n, default=None, help="输出前 N 名(必须 >= 1)")
     screen.add_argument("--reports-dir", type=Path, default=None)
 
     bt = sub.add_parser("backtest", help="quant-only 回测")
@@ -42,13 +50,23 @@ def _write_report(reports_dir: Path, filename: str, text: str) -> Path:
     return path
 
 
+def _warn_skipped(skipped: list) -> None:
+    if not skipped:
+        return
+    detail = ", ".join(f"{sym}({reason})" for sym, reason in skipped)
+    print(f"[warn] 跳过 {len(skipped)} 个标的: {detail}")
+
+
 def cmd_screen(args, provider=None) -> int:
     settings = get_settings()
     provider = provider or _default_provider(settings)
     as_of = dt.date.today()
     symbols = load_universe(args.universe)
-    top_n = args.top or settings.top_n
-    scores = run_screen(provider, symbols, top_n, settings.lookback_days, as_of)
+    top_n = args.top if args.top is not None else settings.top_n
+    start = as_of - dt.timedelta(days=settings.lookback_days)
+    bars, skipped = fetch_bars(provider, symbols, start, as_of)
+    _warn_skipped(skipped)
+    scores = run_screen_on_bars(bars, top_n)
     text = render_screen_report(scores, as_of)
     path = _write_report(args.reports_dir or settings.reports_dir,
                          f"screen_{as_of.strftime('%Y%m%d')}.md", text)
@@ -64,8 +82,8 @@ def cmd_backtest(args, provider=None) -> int:
     config = BacktestConfig(start=args.start, end=args.end,
                             initial_cash=args.cash, max_positions=args.max_positions)
     fetch_start = args.start - dt.timedelta(days=config.lookback_days)
-    bars = {sym: provider.get_daily_bars(sym, fetch_start, args.end) for sym in symbols}
-    bars = {sym: df for sym, df in bars.items() if not df.empty}
+    bars, skipped = fetch_bars(provider, symbols, fetch_start, args.end)
+    _warn_skipped(skipped)
     result = BacktestEngine(bars, default_screener(), config).run()
     text = render_backtest_report(result, config)
     reports_dir = args.reports_dir or settings.reports_dir
