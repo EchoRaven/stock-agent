@@ -22,6 +22,14 @@ def test_max_drawdown():
     assert max_drawdown(eq) == pytest.approx(-0.25)
 
 
+def test_total_return_empty_series():
+    assert total_return(pd.Series([], dtype=float)) == 0.0
+
+
+def test_max_drawdown_empty_series():
+    assert max_drawdown(pd.Series([], dtype=float)) == 0.0
+
+
 def test_sharpe_zero_for_flat_curve():
     assert sharpe(pd.Series([100.0] * 10)) == 0.0
     assert sharpe(pd.Series([100.0])) == 0.0

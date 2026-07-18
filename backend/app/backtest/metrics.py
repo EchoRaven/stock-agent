@@ -7,11 +7,15 @@ TRADING_DAYS_PER_YEAR = 252
 
 
 def total_return(equity: pd.Series) -> float:
+    if len(equity) == 0:
+        return 0.0
     return float(equity.iloc[-1] / equity.iloc[0] - 1)
 
 
 def max_drawdown(equity: pd.Series) -> float:
     """最大回撤,负数(如 -0.25 表示回撤 25%)。"""
+    if len(equity) == 0:
+        return 0.0
     return float((equity / equity.cummax() - 1).min())
 
 
