@@ -35,8 +35,10 @@ class Screener:
     def __init__(self, weighted_rules: list):
         if not weighted_rules:
             raise ValueError("weighted_rules must not be empty")
-        self._rules = weighted_rules
         self._weight_sum = sum(w for _, w in weighted_rules)
+        if self._weight_sum <= 0:
+            raise ValueError("rule weights must sum to a positive number")
+        self._rules = weighted_rules
 
     def score_symbol(self, symbol: str, bars: pd.DataFrame) -> SymbolScore:
         parts = {}

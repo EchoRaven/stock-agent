@@ -62,3 +62,8 @@ def test_rank_sorts_and_truncates():
 def test_empty_rules_rejected():
     with pytest.raises(ValueError):
         Screener([])
+
+
+def test_zero_weight_sum_rejected():
+    with pytest.raises(ValueError):
+        Screener([(FixedRule("a", 1.0), 0.0)])
