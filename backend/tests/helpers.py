@@ -25,6 +25,7 @@ def make_decision_payload(**overrides):
         "as_of": "2026-07-17",
         "action": "buy",
         "confidence": 0.8,
+        "shares": 10,
         "committee": {
             "technical": {"summary": "多头排列,站上 SMA20"},
             "fundamental": {"summary": "营收与 EPS 连续增长"},

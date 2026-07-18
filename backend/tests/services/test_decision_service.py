@@ -13,13 +13,14 @@ from tests.helpers import make_decision_payload
 def test_validate_normalizes():
     out = validate_decision(make_decision_payload(symbol="aapl "))
     assert out["symbol"] == "AAPL"
-    assert out["mode"] == "advisory"
     assert out["confidence"] == 0.8
+    assert out["shares"] == 10
+    assert "mode" not in out  # mode 唯一真相在 DB,校验层直接剥掉
 
 
 def test_mode_cannot_be_forced_by_caller():
-    out = validate_decision(make_decision_payload(mode="auto"))
-    assert out["mode"] == "advisory"  # 服务端强制,不信任调用方
+    out = validate_decision(make_decision_payload(mode="full_auto"))
+    assert "mode" not in out  # 服务端不信任调用方;DB 分流见 test_decision_service_m3
 
 
 @pytest.mark.parametrize("bad", [

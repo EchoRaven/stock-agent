@@ -1,19 +1,24 @@
-"""委员会决定的服务端校验与落库。
+"""委员会决定的服务端校验、落库与模式分流。
 
-安全红线:schema 校验在服务端强制执行,LLM/调用方不可绕过;
-M2 只有建议模式(advisory)——只落库进日报,不生成订单;
-mode 字段已留好,M3 在此按 DB 模式开关分流到风控闸门/订单管理。
+安全红线:
+- schema 校验在服务端强制执行,LLM/调用方不可绕过;
+- mode 的唯一真相在 DB settings row:payload 里的 mode 一律剥掉,
+  未知/未设一律按 advisory 处理(fail-safe);
+- 非 advisory 模式经 order_manager 单一 choke point 分流,任何订单必过风控闸门;
+- prices 由服务端注入(MCP 工具层/CLI 取行情),payload 没有价格通道。
 """
 import datetime as dt
 import json
 
 from sqlalchemy.orm import Session
 
+from app.execution.order_manager import handle_decision
 from app.store.repos.decision_repo import save_decision
+from app.store.repos.settings_repo import MODE_ADVISORY, get_mode
 
 ACTIONS = ("buy", "sell", "hold")
+TRADE_ACTIONS = ("buy", "sell")
 ROLE_KEYS = ("technical", "fundamental", "sentiment", "bear")
-MODE_ADVISORY = "advisory"
 
 
 class DecisionValidationError(ValueError):
@@ -30,7 +35,7 @@ def _require_text(value, msg: str) -> None:
 
 
 def validate_decision(payload) -> dict:
-    """校验并归一化 payload;不合规抛 DecisionValidationError。"""
+    """校验并归一化 payload;不合规抛 DecisionValidationError。mode 字段一律剥掉。"""
     _require(isinstance(payload, dict), "payload must be a dict")
     symbol = payload.get("symbol")
     _require_text(symbol, "symbol must be a non-empty string")
@@ -42,6 +47,10 @@ def validate_decision(payload) -> dict:
     confidence = payload.get("confidence")
     _require(isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
              and 0.0 <= float(confidence) <= 1.0, "confidence must be a number in [0, 1]")
+    if payload.get("action") in TRADE_ACTIONS:
+        shares = payload.get("shares")
+        _require(isinstance(shares, int) and not isinstance(shares, bool) and shares > 0,
+                 "shares must be a positive integer for buy/sell decisions")
     committee = payload.get("committee")
     _require(isinstance(committee, dict), "committee must be a dict with four role sections")
     for role in ROLE_KEYS:
@@ -54,32 +63,34 @@ def validate_decision(payload) -> dict:
     _require_text(chair.get("bear_rebuttal"),
                   "chair.bear_rebuttal must be non-empty (裁决必须显式回应空头)")
     normalized = dict(payload)
+    normalized.pop("mode", None)  # 安全红线:mode 唯一真相在 DB,不信任调用方
     normalized["symbol"] = symbol.strip().upper()
     normalized["as_of"] = as_of.isoformat()
     normalized["confidence"] = float(confidence)
-    normalized["mode"] = MODE_ADVISORY  # M2 服务端强制建议模式,调用方传入无效
     return normalized
 
 
-def submit_decision(session: Session, payload) -> dict:
-    """校验 → 落库 → commit。M2 建议模式:不生成订单。"""
+def submit_decision(session: Session, payload, prices: dict | None = None) -> dict:
+    """校验 → 从 DB 读 mode(唯一真相)→ 落库 → 按模式分流订单。"""
     normalized = validate_decision(payload)
+    mode = get_mode(session)  # fail-safe:未知/未设 → advisory
+    normalized["mode"] = mode
     row = save_decision(
         session,
         as_of=dt.date.fromisoformat(normalized["as_of"]),
         symbol=normalized["symbol"],
         action=normalized["action"],
         confidence=normalized["confidence"],
-        mode=normalized["mode"],
+        mode=mode,
         payload_json=json.dumps(normalized, ensure_ascii=False),
     )
+    result = {"status": "recorded", "id": row.id, "mode": mode, "symbol": row.symbol,
+              "action": row.action, "as_of": normalized["as_of"]}
+    if mode == MODE_ADVISORY or row.action == "hold":
+        session.commit()
+        result["note"] = "advisory/hold:已落库并将进入日报,不生成订单"
+        return result
+    routed = handle_decision(session, row, mode, normalized["shares"], prices or {})
     session.commit()
-    return {
-        "status": "recorded",
-        "id": row.id,
-        "mode": row.mode,
-        "symbol": row.symbol,
-        "action": row.action,
-        "as_of": normalized["as_of"],
-        "note": "M2 建议模式:已落库并将进入日报,不生成订单",
-    }
+    result.update(routed)
+    return result
