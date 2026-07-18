@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     top_n: int = 10
     lookback_days: int = 400
 
+    # M2 新增
+    db_path: Path = Path("stockagent.db")
+    finnhub_api_key: str = ""  # 可空:无 key 时新闻返回空并告警,不崩
+    edgar_user_agent: str = "stock-agent/0.1 (set STOCKAGENT_EDGAR_USER_AGENT)"
+
 
 def get_settings() -> Settings:
     return Settings()

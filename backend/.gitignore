@@ -6,3 +6,4 @@ reports/
 *.parquet
 .pytest_cache/
 *.egg-info/
+*.db
