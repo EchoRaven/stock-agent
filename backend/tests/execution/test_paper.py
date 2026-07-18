@@ -62,6 +62,8 @@ def test_buy_clamps_to_cash(session):
     fills = PaperBroker(slippage_bps=100).process_fills(session, D1, {"AAPL": 100.0})
     assert fills[0].shares == 4  # int(500 // 101)
     assert get_order(session, row.id).status == STATUS_FILLED
+    # Verify remaining cash: 500.0 - (4 * 101.0) = 96.0
+    assert get_account(session, 500.0).cash == pytest.approx(96.0)
 
 
 def test_buy_with_no_cash_cancelled_with_reason(session):
@@ -92,15 +94,40 @@ def test_missing_open_price_cancelled_with_reason(session):
     row = _submitted(session)
     assert PaperBroker().process_fills(session, D1, {}) == []
     out = get_order(session, row.id)
-    assert out.status == STATUS_CANCELLED and "no open price" in out.reason
+    assert out.status == STATUS_CANCELLED and "no valid open price" in out.reason
+
+
+def test_zero_price_cancels_and_batch_continues(session):
+    """Test that 0-price orders are cancelled (not crash) and batch processing continues."""
+    row_aaa = _submitted(session, symbol="AAA", side="buy", shares=10)
+    row_bbb = _submitted(session, symbol="BBB", side="buy", shares=10)
+    fills = PaperBroker().process_fills(session, D1, {"AAA": 0.0, "BBB": 100.0})
+    session.commit()
+    # AAA with 0 price should be cancelled
+    order_aaa = get_order(session, row_aaa.id)
+    assert order_aaa.status == STATUS_CANCELLED
+    assert "no valid open price" in order_aaa.reason
+    # BBB with valid price should be filled
+    order_bbb = get_order(session, row_bbb.id)
+    assert order_bbb.status == STATUS_FILLED
+    # Verify fill happened for BBB
+    assert len(fills) == 1 and fills[0].symbol == "BBB"
 
 
 def test_avg_cost_recomputed_on_second_buy(session):
+    """Test weighted average cost calculation with unequal share counts.
+
+    Buy 1: 10 shares @ 100.0 = cost 1000
+    Buy 2: 5 shares @ 120.0 = cost 600
+    Total: 15 shares, total cost 1600, weighted avg = 1600/15 ≈ 106.67
+    """
     set_position(session, "AAPL", 10, 100.0)
-    _submitted(session, shares=10)
+    _submitted(session, shares=5)  # Unequal to previous shares
     PaperBroker(slippage_bps=0).process_fills(session, D1, {"AAPL": 120.0})
     position = get_positions(session)["AAPL"]
-    assert position.shares == 20 and position.avg_cost == pytest.approx(110.0)
+    assert position.shares == 15
+    expected_avg_cost = (10 * 100.0 + 5 * 120.0) / 15
+    assert position.avg_cost == pytest.approx(expected_avg_cost)
 
 
 def test_state_survives_restart(engine):

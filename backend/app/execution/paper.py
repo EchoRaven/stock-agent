@@ -35,9 +35,9 @@ class PaperBroker(Broker):
         fills = []
         for order in order_repo.get_orders_by_status(session, order_repo.STATUS_SUBMITTED):
             price = open_prices.get(order.symbol)
-            if price is None:
+            if price is None or price <= 0:
                 order_repo.update_status(session, order.id, order_repo.STATUS_CANCELLED,
-                                         reason=f"no open price on {fill_date}")
+                                         reason=f"no valid open price on {fill_date}")
                 continue
             fill = self._execute(session, account, order, fill_date, float(price))
             if fill is not None:
