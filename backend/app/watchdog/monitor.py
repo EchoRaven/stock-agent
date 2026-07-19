@@ -48,7 +48,11 @@ def assess(heartbeats: list, job: str, now_utc: dt.datetime,
 
 
 def check_and_enforce(session: Session, now_utc: dt.datetime) -> dict:
-    """任一 watched job 不健康且当前非 advisory → 自动降级 advisory + 记 alert。"""
+    """任一 watched job 不健康且当前非 advisory → 自动降级 advisory + 记 alert。
+
+    只 flush,不 commit——commit 由调用方负责(生产为 cli_trading.cmd_watchdog),
+    与全系统"业务函数只 flush;service/CLI 提交"的约定一致。
+    """
     verdicts = [assess(recent_heartbeats(session, job), job, now_utc)
                 for job in WATCHED_JOBS]
     unhealthy = [v for v in verdicts if not v.healthy]
@@ -61,7 +65,6 @@ def check_and_enforce(session: Session, now_utc: dt.datetime) -> dict:
         add_alert(session, "watchdog_downgrade", message)
         logger.warning("watchdog downgraded: %s", message)
         downgraded = True
-    session.commit()
     return {"healthy": not unhealthy, "mode_before": mode_before,
             "mode_after": get_mode(session), "downgraded": downgraded,
             "reasons": [v.reason for v in verdicts]}

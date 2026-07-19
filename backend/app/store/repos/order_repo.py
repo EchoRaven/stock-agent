@@ -1,5 +1,7 @@
-"""orders 仓储。重复保护:同 (as_of, symbol) 只允许一张活跃订单(防重复下单)。
+"""orders 仓储。重复保护:同 (as_of, symbol, side) 只允许一张活跃订单(防重复下单)。
 
+side 隔离:同日同标的的反向操作(如已有活跃 buy 时的 sell)不算重复——
+sell 通常是风险降低型平仓,不应被同标的的活跃 buy 挡住。
 rejected/cancelled 是终态审计记录,不占用重复保护槽位——拒绝必须留痕。
 """
 import datetime as dt
@@ -22,13 +24,13 @@ COUNTED_BUY_STATUSES = ACTIVE_STATUSES + (STATUS_FILLED,)
 
 
 class DuplicateOrderError(ValueError):
-    """同 (as_of, symbol) 已存在活跃订单。"""
+    """同 (as_of, symbol, side) 已存在活跃订单。"""
 
 
-def has_active_order(session: Session, as_of: dt.date, symbol: str) -> bool:
+def has_active_order(session: Session, as_of: dt.date, symbol: str, side: str) -> bool:
     stmt = (select(OrderRow.id)
             .where(OrderRow.as_of == as_of, OrderRow.symbol == symbol,
-                   OrderRow.status.in_(ACTIVE_STATUSES))
+                   OrderRow.side == side, OrderRow.status.in_(ACTIVE_STATUSES))
             .limit(1))
     return session.scalars(stmt).first() is not None
 
@@ -37,8 +39,9 @@ def create_order(session: Session, as_of: dt.date, symbol: str, side: str, share
                  status: str, mode: str, decision_id=None, reason: str = "") -> OrderRow:
     if status not in STATUSES:
         raise ValueError(f"invalid status: {status}")
-    if status in ACTIVE_STATUSES and has_active_order(session, as_of, symbol):
-        raise DuplicateOrderError(f"active order already exists for {symbol} on {as_of}")
+    if status in ACTIVE_STATUSES and has_active_order(session, as_of, symbol, side):
+        raise DuplicateOrderError(
+            f"active {side} order already exists for {symbol} on {as_of}")
     row = OrderRow(as_of=as_of, symbol=symbol, side=side, shares=shares,
                    status=status, mode=mode, decision_id=decision_id, reason=reason)
     session.add(row)

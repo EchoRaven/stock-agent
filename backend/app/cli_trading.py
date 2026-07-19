@@ -113,5 +113,6 @@ def cmd_mode(args) -> int:
 def cmd_watchdog(args) -> int:
     with open_cli_session() as session:
         result = check_and_enforce(session, dt.datetime.now(dt.UTC).replace(tzinfo=None))
+        session.commit()  # check_and_enforce 只 flush;提交在此(CLI 层)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result["healthy"] else 1

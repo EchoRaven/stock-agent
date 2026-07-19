@@ -14,6 +14,9 @@ from tests.helpers import make_decision_payload
 
 D = dt.date(2026, 7, 17)
 D1 = dt.date(2026, 7, 20)
+# 闸门 as_of 由服务端时钟(now_utc)派生;固定注入映射到 D / D1 保持确定性。
+NOW_UTC_D = dt.datetime(2026, 7, 17, 16, 0, tzinfo=dt.UTC)
+NOW_UTC_D1 = dt.datetime(2026, 7, 20, 16, 0, tzinfo=dt.UTC)
 
 
 @pytest.fixture
@@ -27,7 +30,8 @@ def session():
 def test_semi_auto_closed_loop(session):
     # 决定 → 待确认 → 人工批准(重过闸)→ 提交 → 次一交易时段开盘成交
     set_mode(session, MODE_SEMI_AUTO)
-    result = submit_decision(session, make_decision_payload(), prices={"AAPL": 100.0})
+    result = submit_decision(session, make_decision_payload(), prices={"AAPL": 100.0},
+                             now_utc=NOW_UTC_D)
     assert result["order"]["status"] == STATUS_PENDING_CONFIRMATION
     assert [o["id"] for o in list_pending(session)] == [result["order"]["id"]]
     approved = approve_order(session, result["order"]["id"], D, {"AAPL": 100.0})
@@ -42,7 +46,8 @@ def test_semi_auto_closed_loop(session):
 
 def test_full_auto_closed_loop(session):
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
-    result = submit_decision(session, make_decision_payload(), prices={"AAPL": 100.0})
+    result = submit_decision(session, make_decision_payload(), prices={"AAPL": 100.0},
+                             now_utc=NOW_UTC_D)
     assert result["order"]["status"] == STATUS_SUBMITTED
     fills = settle_open(session, D1, {"AAPL": 100.0})
     session.commit()
@@ -53,22 +58,23 @@ def test_full_auto_closed_loop(session):
 def test_breaker_day_full_auto_only_sells(session):
     # 红线集成:日内权益回撤 >= 5% 触发熔断后,full_auto 当日买单全拒、卖单放行
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
-    submit_decision(session, make_decision_payload(shares=150), prices={"AAPL": 100.0})
+    submit_decision(session, make_decision_payload(shares=150), prices={"AAPL": 100.0},
+                    now_utc=NOW_UTC_D)
     settle_open(session, D1, {"AAPL": 100.0})  # 持仓 150 股,成本约 100.05
     # D1 第一次评估(正常价):day_start 快照约 99_992.5
     first = submit_decision(session, make_decision_payload(
         symbol="MSFT", as_of="2026-07-20", shares=1),
-        prices={"AAPL": 100.0, "MSFT": 10.0})
+        prices={"AAPL": 100.0, "MSFT": 10.0}, now_utc=NOW_UTC_D1)
     assert first["order"]["status"] == STATUS_SUBMITTED
     # AAPL 暴跌至 50:权益 ~92_492,回撤 ~7.5% → 熔断,买单拒
     crashed = submit_decision(session, make_decision_payload(
         symbol="NVDA", as_of="2026-07-20", shares=1),
-        prices={"AAPL": 50.0, "NVDA": 10.0})
+        prices={"AAPL": 50.0, "NVDA": 10.0}, now_utc=NOW_UTC_D1)
     assert crashed["order"]["status"] == STATUS_REJECTED
     assert "circuit breaker" in crashed["order"]["reason"]
     assert get_account(session, 100_000.0).breaker_tripped_on == D1
     # 熔断日卖出放行
     sell = submit_decision(session, make_decision_payload(
         action="sell", as_of="2026-07-20", shares=150),
-        prices={"AAPL": 50.0})
+        prices={"AAPL": 50.0}, now_utc=NOW_UTC_D1)
     assert sell["order"]["status"] == STATUS_SUBMITTED

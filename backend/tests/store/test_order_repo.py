@@ -42,19 +42,29 @@ def test_create_and_get(session):
 
 def test_duplicate_active_order_blocked(session):
     create_order(session, D, "AAPL", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
-    assert has_active_order(session, D, "AAPL")
+    assert has_active_order(session, D, "AAPL", "buy")
     with pytest.raises(DuplicateOrderError):
-        create_order(session, D, "AAPL", "sell", 5, STATUS_SUBMITTED, "full_auto")
+        create_order(session, D, "AAPL", "buy", 5, STATUS_SUBMITTED, "full_auto")
     # 审计用 rejected 单不受重复保护限制;不同日/不同标的不受影响
     create_order(session, D, "AAPL", "buy", 10, STATUS_REJECTED, "full_auto", reason="over cap")
     create_order(session, D1, "AAPL", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
     create_order(session, D, "MSFT", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
 
 
+def test_duplicate_protection_is_side_scoped(session):
+    # fix 2:同日同标的的活跃 buy 不应挡住 sell(风险降低型平仓,不是重复下单)
+    create_order(session, D, "AAA", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
+    assert has_active_order(session, D, "AAA", "buy")
+    assert not has_active_order(session, D, "AAA", "sell")
+    row = create_order(session, D, "AAA", "sell", 5, STATUS_SUBMITTED, "full_auto")
+    assert row.id is not None
+    assert has_active_order(session, D, "AAA", "sell")
+
+
 def test_terminal_order_frees_the_slot(session):
     row = create_order(session, D, "AAPL", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
     update_status(session, row.id, STATUS_REJECTED, reason="user")
-    assert not has_active_order(session, D, "AAPL")
+    assert not has_active_order(session, D, "AAPL", "buy")
     create_order(session, D, "AAPL", "buy", 10, STATUS_PENDING_CONFIRMATION, "semi_auto")
 
 

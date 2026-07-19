@@ -1,4 +1,6 @@
 """M3:mode 唯一真相在 DB;payload 指定 mode/旁路字段一律无效;按模式分流。"""
+import datetime as dt
+
 import pytest
 
 from app.services.decision_service import (DecisionValidationError, submit_decision,
@@ -12,6 +14,9 @@ from app.store.repos.settings_repo import (MODE_FULL_AUTO, MODE_SEMI_AUTO,
 from tests.helpers import make_decision_payload
 
 PRICES = {"AAPL": 100.0}
+# 闸门 as_of 现由服务端时钟(now_utc)派生,不再采信 payload.as_of;固定注入以保持
+# 用例确定性,并映射到 payload 默认 as_of("2026-07-17")所在的 ET 交易日。
+NOW_UTC = dt.datetime(2026, 7, 17, 16, 0, tzinfo=dt.UTC)
 
 
 @pytest.fixture
@@ -54,14 +59,14 @@ def test_unknown_db_mode_fail_safe_advisory(session):
 
 def test_semi_auto_creates_pending_order(session):
     set_mode(session, MODE_SEMI_AUTO)
-    result = submit_decision(session, make_decision_payload(), prices=PRICES)
+    result = submit_decision(session, make_decision_payload(), prices=PRICES, now_utc=NOW_UTC)
     assert result["mode"] == MODE_SEMI_AUTO
     assert result["order"]["status"] == STATUS_PENDING_CONFIRMATION
 
 
 def test_full_auto_within_caps_submits(session):
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
-    result = submit_decision(session, make_decision_payload(), prices=PRICES)
+    result = submit_decision(session, make_decision_payload(), prices=PRICES, now_utc=NOW_UTC)
     assert result["order"]["status"] == STATUS_SUBMITTED
 
 
@@ -69,7 +74,7 @@ def test_full_auto_over_cap_rejected_even_with_bypass_keys(session):
     # 红线:gate 不可被 payload/工具参数绕过
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
     payload = make_decision_payload(shares=300, skip_gate=True, risk_override="all")
-    result = submit_decision(session, payload, prices=PRICES)
+    result = submit_decision(session, payload, prices=PRICES, now_utc=NOW_UTC)
     assert result["order"]["status"] == STATUS_REJECTED
     assert "single-position cap" in result["order"]["reason"]
 
@@ -77,7 +82,7 @@ def test_full_auto_over_cap_rejected_even_with_bypass_keys(session):
 def test_full_auto_buy_without_price_fail_safe_rejected(session):
     # 服务端取不到参考价 → default-deny,而不是按 0 元放行
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
-    result = submit_decision(session, make_decision_payload(), prices={})
+    result = submit_decision(session, make_decision_payload(), prices={}, now_utc=NOW_UTC)
     assert result["order"]["status"] == STATUS_REJECTED
 
 
@@ -89,12 +94,13 @@ def test_stale_held_quote_blocks_buys_allows_sells(session):
     set_position(session, "AAPL", 10, 100.0)  # 持有 AAPL
     # 买 MSFT,但 prices 里没有持仓 AAPL 的报价 → AAPL stale → 买单一律拒
     buy = submit_decision(session, make_decision_payload(symbol="MSFT", shares=1),
-                          prices={"MSFT": 50.0})
+                          prices={"MSFT": 50.0}, now_utc=NOW_UTC)
     assert buy["order"]["status"] == STATUS_REJECTED
     assert "报价缺失" in buy["order"]["reason"]
     # 卖出持仓仍放行(AAPL 报价依旧缺失)
     sell = submit_decision(session, make_decision_payload(symbol="AAPL", action="sell",
-                                                         shares=5), prices={"MSFT": 50.0})
+                                                         shares=5), prices={"MSFT": 50.0},
+                           now_utc=NOW_UTC)
     assert sell["order"]["status"] == STATUS_SUBMITTED
 
 

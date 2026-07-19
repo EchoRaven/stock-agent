@@ -30,20 +30,20 @@ def _decision(session, symbol="AAPL", action="buy"):
 
 
 def test_semi_auto_queues_pending(session):
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
     assert out["order"]["status"] == STATUS_PENDING_CONFIRMATION
     assert out["order"]["decision_id"] is not None
     assert [o["id"] for o in list_pending(session)] == [out["order"]["id"]]
 
 
 def test_full_auto_within_caps_submits(session):
-    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES, as_of=D)
     assert out["order"]["status"] == STATUS_SUBMITTED
 
 
 def test_full_auto_over_cap_rejected_not_submitted(session):
     # 红线:full_auto 超单票上限(20% × 10 万 = 2 万)必须被闸门拒绝,不提交 broker
-    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 300, PRICES)
+    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 300, PRICES, as_of=D)
     assert out["order"]["status"] == STATUS_REJECTED
     assert "single-position cap" in out["order"]["reason"]
     assert get_positions(session) == {}
@@ -52,28 +52,41 @@ def test_full_auto_over_cap_rejected_not_submitted(session):
 
 
 def test_semi_auto_over_cap_rejected_at_creation(session):
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 300, PRICES)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 300, PRICES, as_of=D)
     assert out["order"]["status"] == STATUS_REJECTED
     assert list_pending(session) == []
 
 
 def test_duplicate_active_order_suppressed(session):
-    handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
+    handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
     assert out["order"] is None and "duplicate" in out["note"]
     assert len(list_pending(session)) == 1
 
 
+def test_sell_not_blocked_by_active_buy_same_symbol(session):
+    # fix 2:重复保护按 (as_of, symbol, side) 隔离——同日同标的的活跃 buy
+    # 不应挡住 sell(风险降低型平仓不是重复下单)
+    handle_decision(session, _decision(session, action="buy"), MODE_SEMI_AUTO, 10,
+                    PRICES, as_of=D)
+    out = handle_decision(session, _decision(session, action="sell"), MODE_SEMI_AUTO, 5,
+                          PRICES, as_of=D)
+    assert out["order"] is not None
+    assert out["order"]["status"] == STATUS_PENDING_CONFIRMATION
+    assert out["order"]["side"] == "sell"
+    assert len(list_pending(session)) == 2
+
+
 def test_unknown_mode_creates_nothing(session):
     # fail-safe:未知模式绝不建单
-    out = handle_decision(session, _decision(session), "yolo", 10, PRICES)
+    out = handle_decision(session, _decision(session), "yolo", 10, PRICES, as_of=D)
     assert out["order"] is None
     assert list_pending(session) == []
 
 
 def test_approve_regates_with_fresh_params(session):
     # 红线:批准时刻重新过闸门——创建时合法,批准前收紧参数后必须拒绝
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
     update_risk_params(session, single_position_cap_pct=0.001)  # 上限收紧到 100 元
     approved = approve_order(session, out["order"]["id"], D, PRICES)
     assert approved["order"]["status"] == STATUS_REJECTED
@@ -81,7 +94,7 @@ def test_approve_regates_with_fresh_params(session):
 
 
 def test_approve_then_settle_fills(session):
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
     approved = approve_order(session, out["order"]["id"], D, PRICES)
     assert approved["order"]["status"] == STATUS_SUBMITTED
     fills = settle_open(session, D1, {"AAPL": 100.0})
@@ -90,7 +103,7 @@ def test_approve_then_settle_fills(session):
 
 
 def test_reject_order(session):
-    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_SEMI_AUTO, 10, PRICES, as_of=D)
     rejected = reject_order(session, out["order"]["id"], reason="不想买")
     assert rejected["order"]["status"] == STATUS_REJECTED
     assert rejected["order"]["reason"] == "不想买"
@@ -98,7 +111,7 @@ def test_reject_order(session):
 
 
 def test_approve_nonpending_is_refused(session):
-    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES)
+    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES, as_of=D)
     result = approve_order(session, out["order"]["id"], D, PRICES)
     assert result["order"]["status"] == STATUS_SUBMITTED  # 原样返回,不重复提交
     assert "not pending" in result["note"]

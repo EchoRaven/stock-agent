@@ -35,6 +35,16 @@ def test_invalid_payload_rejected_not_raised(factory):
         assert get_decisions(session, dt.date(2026, 7, 17)) == []
 
 
+def test_advisory_never_fetches_prices(factory, monkeypatch):
+    # 红线证明:advisory 提前返回,绝不触达取价 provider——未来不慎在 advisory
+    # 分支前引入取价逻辑,这里会立刻抓到(而不是依赖行为巧合地"没触发")。
+    def _boom():
+        raise AssertionError("get_price_provider must not be called in advisory mode")
+    monkeypatch.setattr(runtime, "get_price_provider", _boom)
+    result = submit_decision(make_decision_payload())
+    assert result["status"] == "recorded" and result["mode"] == "advisory"
+
+
 class AnchoredPrices(PriceProvider):
     def get_daily_bars(self, symbol, start, end):
         return make_bars(start=(end - dt.timedelta(days=13)).isoformat(), days=10, base=100.0)

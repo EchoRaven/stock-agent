@@ -5,7 +5,10 @@
 - mode 的唯一真相在 DB settings row:payload 里的 mode 一律剥掉,
   未知/未设一律按 advisory 处理(fail-safe);
 - 非 advisory 模式经 order_manager 单一 choke point 分流,任何订单必过风控闸门;
-- prices 由服务端注入(MCP 工具层/CLI 取行情),payload 没有价格通道。
+- prices 由服务端注入(MCP 工具层/CLI 取行情),payload 没有价格通道;
+- 闸门/下单用的 as_of 由服务端时钟(now_utc,可注入便于测试)经 et_trading_day
+  派生,绝不采信 payload 的 as_of(可被伪造成未来日期以绕过熔断/冷却/查重——
+  M3 final review 确认漏洞);payload 的 as_of 只落入 DecisionRow 作审计记录。
 """
 import datetime as dt
 import json
@@ -15,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.execution.order_manager import handle_decision
 from app.store.repos.decision_repo import save_decision
 from app.store.repos.settings_repo import MODE_ADVISORY, get_mode
+from app.util.trading_day import et_trading_day
 
 ACTIONS = ("buy", "sell", "hold")
 TRADE_ACTIONS = ("buy", "sell")
@@ -70,8 +74,12 @@ def validate_decision(payload) -> dict:
     return normalized
 
 
-def submit_decision(session: Session, payload, prices: dict | None = None) -> dict:
-    """校验 → 从 DB 读 mode(唯一真相)→ 落库 → 按模式分流订单。"""
+def submit_decision(session: Session, payload, prices: dict | None = None,
+                    now_utc: dt.datetime | None = None) -> dict:
+    """校验 → 从 DB 读 mode(唯一真相)→ 落库 → 按模式分流订单。
+
+    now_utc 可注入(测试确定性,与 watchdog/circuit_breaker 同款时间注入模式)。
+    """
     normalized = validate_decision(payload)
     mode = get_mode(session)  # fail-safe:未知/未设 → advisory
     normalized["mode"] = mode
@@ -90,7 +98,10 @@ def submit_decision(session: Session, payload, prices: dict | None = None) -> di
         session.commit()
         result["note"] = "advisory/hold:已落库并将进入日报,不生成订单"
         return result
-    routed = handle_decision(session, row, mode, normalized["shares"], prices or {})
+    # 安全红线:gate_as_of 由服务端时钟派生,绝不用 row.as_of(来自 payload,可伪造)
+    gate_as_of = et_trading_day(now_utc or dt.datetime.now(dt.UTC))
+    routed = handle_decision(session, row, mode, normalized["shares"], prices or {},
+                             as_of=gate_as_of)
     session.commit()
     result.update(routed)
     return result

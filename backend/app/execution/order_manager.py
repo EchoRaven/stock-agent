@@ -3,7 +3,10 @@
 安全红线:
 - mode 由 decision_service 从 DB 读出后传入,本模块绝不采信 payload;
 - 任何订单(semi/full、创建/批准)必须先过 RiskGate,拒绝即不提交,且留审计单;
-- 未知模式 fail-safe 不建单。
+- 未知模式 fail-safe 不建单;
+- 闸门/查重/下单用的 as_of 由调用方显式传入(服务端时钟派生),绝不采信
+  decision.as_of——decision.as_of 来自 payload,可被伪造成未来日期以绕过
+  熔断/冷却/查重(M3 final review 确认漏洞);decision.as_of 只保留作审计字段。
 """
 import datetime as dt
 import logging
@@ -39,15 +42,19 @@ def _gate_check(session: Session, symbol: str, side: str, shares: int,
 
 
 def handle_decision(session: Session, decision: DecisionRow, mode: str,
-                    shares: int, prices: dict) -> dict:
-    """semi_auto → 待确认队列;full_auto → 过闸门后直提 PaperBroker;其余不建单。"""
+                    shares: int, prices: dict, *, as_of: dt.date) -> dict:
+    """semi_auto → 待确认队列;full_auto → 过闸门后直提 PaperBroker;其余不建单。
+
+    as_of 必须由调用方显式传入(server-derived gating date)——绝不用
+    decision.as_of(payload 可伪造未来日期绕过熔断/冷却/查重)。
+    """
     if mode not in (MODE_SEMI_AUTO, MODE_FULL_AUTO):
         return {"order": None, "note": f"mode {mode!r} does not create orders"}
-    as_of, symbol, side = decision.as_of, decision.symbol, decision.action
-    if order_repo.has_active_order(session, as_of, symbol):
-        logger.warning("duplicate order suppressed for %s on %s", symbol, as_of)
+    symbol, side = decision.symbol, decision.action
+    if order_repo.has_active_order(session, as_of, symbol, side):
+        logger.warning("duplicate order suppressed for %s %s on %s", side, symbol, as_of)
         return {"order": None,
-                "note": f"duplicate protection: active order already exists "
+                "note": f"duplicate protection: active {side} order already exists "
                         f"for {symbol} on {as_of}"}
     check = _gate_check(session, symbol, side, shares, as_of, prices)
     if not check.allowed:
