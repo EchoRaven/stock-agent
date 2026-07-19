@@ -43,6 +43,24 @@ def test_unknown_db_mode_fails_safe(session, caplog):
     assert "fail-safe" in caplog.text
 
 
+def test_empty_and_none_mode_fail_safe(session, caplog):
+    # 红线:mode 被直接置空("")/置 None(ORM 脏写,不经 set_mode())也必须
+    # fail-safe 为 advisory——钉住 get_mode() 里的 `(mode or "").strip()` 空值
+    # 合并;如果未来"简化"成裸 `mode.strip()`,None 输入会直接抛 AttributeError,
+    # 这条测试会变红。
+    row = get_app_settings(session)
+    row.mode = ""
+    session.flush()
+    with caplog.at_level(logging.WARNING):
+        assert get_mode(session) == MODE_ADVISORY
+    # 注意:mode 列在 schema 里是 NOT NULL,故意不 flush(会撞 DB 层约束,
+    # 那是另一层、无关的防御,不是这里要钉的 get_mode() 空值合并逻辑)——
+    # 只验证 get_mode() 本身对内存中 None 值的处理,不做 DB round-trip。
+    row.mode = None
+    with caplog.at_level(logging.WARNING):
+        assert get_mode(session) == MODE_ADVISORY
+
+
 def test_set_mode_semi_and_rejects_unknown(session):
     set_mode(session, MODE_SEMI_AUTO)
     assert get_mode(session) == MODE_SEMI_AUTO
