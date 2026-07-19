@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from app.backtest.engine import BacktestConfig, BacktestEngine
+from app.cli_trading import register as register_trading
 from app.config import get_settings
 from app.data.cache import CachedPriceProvider
 from app.data.prices_yfinance import YFinancePriceProvider
@@ -43,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     rep = sub.add_parser("report", help="生成当日(或指定日)盘后日报")
     rep.add_argument("--date", type=dt.date.fromisoformat, default=None)
     rep.add_argument("--reports-dir", type=Path, default=None)
+    register_trading(sub)
     return parser
 
 
@@ -128,7 +130,9 @@ def main(argv=None) -> int:
         return cmd_screen(args)
     if args.command == "backtest":
         return cmd_backtest(args)
-    return cmd_report(args)
+    if args.command == "report":
+        return cmd_report(args)
+    return args.func(args)  # M3 子命令(orders/mode/watchdog)经 set_defaults 分发
 
 
 if __name__ == "__main__":

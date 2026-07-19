@@ -20,6 +20,19 @@
     # MCP server(stdio,给 OpenClaw 用;接入步骤见仓库根 openclaw/setup.md)
     .venv/bin/python -m app.mcp.server
 
+## M3:模拟盘交易与风控
+
+- 模式开关(唯一真相在 DB settings 表):
+  `python -m app.cli mode show` / `python -m app.cli mode set semi_auto` /
+  `python -m app.cli mode set full_auto --confirm-full-auto`(全自动必须显式确认)
+- 订单队列(半自动人审):`python -m app.cli orders list` →
+  `python -m app.cli orders approve <id>`(批准时重过风控闸门)/ `orders reject <id>`
+- 开盘撮合(每交易日开盘后跑一次):`python -m app.cli orders settle`
+- watchdog(建议系统 cron 每小时):`python -m app.cli watchdog`
+  ——cron 心跳异常自动降级 advisory 并写 alerts 表
+- 风控参数在 settings 表(单票/总仓位上限、单日新开仓数、日亏损熔断、冷却期、初始资金),
+  M4 设置页开放修改;熔断触发后当日只允许卖出,重启不重置
+
 ## 测试
 
     .venv/bin/pytest            # 全部离线测试
