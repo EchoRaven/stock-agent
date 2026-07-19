@@ -47,7 +47,7 @@ class PaperBroker(Broker):
 
     def _execute(self, session, account, order: OrderRow, fill_date: dt.date,
                  open_price: float):
-        held = paper_repo.get_positions(session).get(order.symbol)
+        held = paper_repo.get_position(session, order.symbol)
         held_shares = held.shares if held is not None else 0
         if order.side == "buy":
             price = open_price * (1 + self._slip)

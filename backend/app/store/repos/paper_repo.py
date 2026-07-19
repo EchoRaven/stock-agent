@@ -29,6 +29,13 @@ def get_positions(session: Session) -> dict:
     return {row.symbol: row for row in session.scalars(stmt)}
 
 
+def get_position(session: Session, symbol: str) -> PaperPositionRow | None:
+    """单标的持仓单行查询(不做全表扫描);与 get_positions() 同样只认 shares > 0。"""
+    stmt = select(PaperPositionRow).where(PaperPositionRow.symbol == symbol,
+                                          PaperPositionRow.shares > 0)
+    return session.scalars(stmt).first()
+
+
 def set_position(session: Session, symbol: str, shares: int, avg_cost: float) -> None:
     """写持仓(upsert);shares 归零即删行。"""
     stmt = select(PaperPositionRow).where(PaperPositionRow.symbol == symbol)
