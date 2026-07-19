@@ -88,6 +88,10 @@ def cmd_orders(args, provider=None) -> int:
         print(result["note"])
         if result["order"]:
             print(result["order"])
+        if "is not pending confirmation" in result["note"]:
+            # no-op:目标不存在或已不在 pending_confirmation,没有任何状态迁移
+            # 发生——非 0 退出码让脚本能区分"真的批准/拒绝了"与"什么也没做"。
+            return 2
         return 0
 
 

@@ -83,6 +83,28 @@ def test_orders_approve_requires_id(factory, capsys):
     assert main(["orders", "approve"]) == 2
 
 
+def test_orders_approve_nonexistent_id_returns_nonzero(factory, capsys):
+    # 可脚本化:目标 order 不存在/非 pending → 无状态变化,退出码非 0
+    assert main(["orders", "approve", "999999"]) == 2
+    assert "is not pending confirmation" in capsys.readouterr().out
+
+
+def test_orders_reject_nonexistent_id_returns_nonzero(factory, capsys):
+    assert main(["orders", "reject", "999999"]) == 2
+    assert "is not pending confirmation" in capsys.readouterr().out
+
+
+def test_orders_approve_already_settled_returns_nonzero(factory, capsys):
+    # 目标存在但已不是 pending_confirmation(已 approve 过)→ 二次 approve 是 no-op
+    with factory() as session:
+        row = create_order(session, D, "AAPL", "buy", 5,
+                           STATUS_PENDING_CONFIRMATION, "semi_auto")
+        session.commit()
+        order_id = row.id
+    assert main(["orders", "approve", str(order_id)]) == 0  # 真实状态迁移
+    assert main(["orders", "approve", str(order_id)]) == 2  # 二次 no-op
+
+
 def test_watchdog_reports_and_downgrades(factory, capsys):
     with factory() as session:
         set_mode(session, MODE_SEMI_AUTO)
