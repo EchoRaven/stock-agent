@@ -122,6 +122,18 @@ def test_injection_headline_routed_through_defended_scorer():
     assert "不可信" in prompt or "untrusted" in prompt.lower()
 
 
+def test_score_true_with_null_client_never_raises():
+    """score=True 但调用方未传 gemini_client(None)——跳过打分,绝不抛异常(违反会破坏"绝不抛异常"契约)。"""
+    items = _items(2, symbol_tag="NULLCLIENT")
+    provider = FakeNewsProvider(items)
+
+    result = get_symbol_sentiment(provider, None, "AAPL", dt.date(2026, 7, 17), score=True)
+
+    assert result["sentiment"] is None
+    assert result["scored"] is False
+    assert result["news_count"] == 2
+
+
 def test_out_of_range_sentiment_clamped_via_integration():
     items = _items(1, symbol_tag="CLAMPINT")
     provider = FakeNewsProvider(items)

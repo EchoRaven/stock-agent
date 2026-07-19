@@ -34,7 +34,7 @@ def get_symbol_sentiment(news_provider, gemini_client, symbol: str, as_of: dt.da
         "scored": False,
         "headlines": headlines_display,
     }
-    if not items or not score:
+    if not items or not score or gemini_client is None:
         return result
 
     # 传原始 headline+summary 文本给打分器(注入清洗在 score_news_sentiment 内部完成)
