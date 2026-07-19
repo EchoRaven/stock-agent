@@ -40,6 +40,7 @@ PERIODS = {
     "bull_2023H2_2024H1": (dt.date(2023, 7, 1), dt.date(2024, 6, 30)),   # 基线很强(+30%)
     "chop_2024H2_2025H1": (dt.date(2024, 7, 1), dt.date(2025, 6, 30)),   # 基线偏弱(+3%)
     "bear_2022":          (dt.date(2022, 1, 1), dt.date(2022, 12, 31)),  # 真熊市:SPY 大段在 200 均线下 —— regime 的真正考场
+    "whipsaw_covid_2020": (dt.date(2020, 1, 1), dt.date(2020, 12, 31)),  # V 型:2-3月暴跌后急速反弹 —— 200SMA 过滤器的对抗性最差场景(可能卖在底、追在高)
 }
 
 # variant name -> RegimeConfig kwargs override (None = baseline BacktestEngine, no regime gate)
