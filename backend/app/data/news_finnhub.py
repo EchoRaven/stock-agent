@@ -45,8 +45,11 @@ class FinnhubNewsProvider(NewsProvider):
             resp = httpx.get(COMPANY_NEWS_URL, params=params, timeout=self._timeout)
             resp.raise_for_status()
             raw = resp.json()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("finnhub 新闻抓取失败(HTTP %s),返回空列表", exc.response.status_code)
+            return []
         except httpx.HTTPError as exc:
-            logger.warning("finnhub 新闻抓取失败(%s),返回空列表", exc)
+            logger.warning("finnhub 新闻抓取失败(%s),返回空列表", type(exc).__name__)
             return []
         items = []
         for entry in raw if isinstance(raw, list) else []:

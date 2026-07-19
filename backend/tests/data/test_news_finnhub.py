@@ -17,7 +17,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError("boom", request=None, response=None)
+            raise httpx.HTTPStatusError("boom", request=None, response=self)
 
     def json(self):
         return self._payload
@@ -65,6 +65,35 @@ def test_max_items_cap(monkeypatch):
     monkeypatch.setattr(mod.httpx, "get", lambda *a, **k: FakeResponse(payload))
     out = FinnhubNewsProvider(api_key="k", max_items=5).get_company_news("AAPL", START, END)
     assert len(out) == 5
+
+
+def test_http_status_error_never_leaks_key_in_log(monkeypatch, caplog):
+    """403 响应触发 raise_for_status();日志必须只含状态码,绝不含 token。"""
+    request = httpx.Request(
+        "GET", "https://finnhub.io/api/v1/company-news",
+        params={"symbol": "AAPL", "token": "SECRETKEY123"},
+    )
+    response = httpx.Response(403, request=request)
+
+    monkeypatch.setattr(mod.httpx, "get", lambda *a, **k: response)
+    with caplog.at_level(logging.WARNING):
+        out = FinnhubNewsProvider(api_key="SECRETKEY123").get_company_news("AAPL", START, END)
+    assert out == []
+    assert "SECRETKEY123" not in caplog.text
+    assert "403" in caplog.text
+
+
+def test_transport_error_logs_type_name_only(monkeypatch, caplog):
+    """连接类异常(非 HTTP 状态码)只记录异常类型名,不泄露任何请求细节/key。"""
+    def fake_get(url, params=None, timeout=None):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(mod.httpx, "get", fake_get)
+    with caplog.at_level(logging.WARNING):
+        out = FinnhubNewsProvider(api_key="SECRETKEY123").get_company_news("AAPL", START, END)
+    assert out == []
+    assert "ConnectError" in caplog.text
+    assert "SECRETKEY123" not in caplog.text
 
 
 @pytest.mark.network

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.data.cache import CachedPriceProvider
 from app.data.fundamentals_edgar import EdgarFundamentalsProvider
-from app.data.news_finnhub import FinnhubNewsProvider
+from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
 from app.store.db import init_db, make_engine, make_session_factory
 
@@ -18,7 +18,7 @@ def get_price_provider():
 
 
 def get_news_provider():
-    return FinnhubNewsProvider(get_settings().finnhub_api_key)
+    return build_news_provider(get_settings())
 
 
 def get_fundamentals_provider():
