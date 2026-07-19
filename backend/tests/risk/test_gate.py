@@ -1,5 +1,8 @@
+import dataclasses
 import datetime as dt
 import logging
+
+import pytest
 
 from app.risk.gate import DEFAULT_RULES, RiskGate, params_from_row
 from app.risk.rules import AccountState, OrderRequest, RiskParams
@@ -64,3 +67,26 @@ def test_params_from_row_maps_all_fields():
     row = SettingsRow(id=1, single_position_cap_pct=0.1, total_position_cap_pct=0.5,
                       max_new_positions_per_day=1, daily_loss_halt_pct=0.02, cooldown_days=9)
     assert params_from_row(row) == RiskParams(0.1, 0.5, 1, 0.02, 9)
+
+
+def test_stale_quote_rejects_over_cap_buy_before_cap_rule():
+    # 行为验证(而不只是 DEFAULT_RULES 元组顺序的结构断言):同一笔买单
+    # 既触发 stale-quote(rule 2)又触发单票上限(rule 3),拒绝原因必须是
+    # stale-quote——证明规则顺序在实际执行路径上生效、先拒即止。
+    stale_account = _account(stale_priced_symbols=frozenset({"MSFT"}))
+    over_cap_order = _order(shares=300)  # 300*100=30000 > cap 100_000*0.20=20000
+    out = RiskGate().check(over_cap_order, stale_account, PARAMS)
+    assert not out.allowed
+    assert "持仓报价缺失" in out.reason
+    assert "cap" not in out.reason
+
+
+def test_risk_dataclasses_are_frozen():
+    order = _order()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        order.shares = 999
+    account = _account()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        account.cash = 0.0
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        PARAMS.cooldown_days = 1
