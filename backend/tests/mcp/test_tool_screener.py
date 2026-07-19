@@ -7,6 +7,7 @@ import app.mcp.runtime as runtime
 from app.data.base import PriceProvider
 from app.mcp.tool_screener import run_screener
 from app.store.db import init_db, make_engine, make_session_factory
+from app.store.repos.heartbeat_repo import recent_heartbeats
 from app.store.repos.signal_repo import get_signals
 from app.util.trading_day import et_trading_day
 from tests.helpers import make_bars
@@ -55,3 +56,25 @@ def test_top_n_below_one_returns_error(factory):
 def test_top_n_negative_returns_error(factory):
     out = run_screener(top_n=-3)
     assert out["status"] == "error"
+
+
+def test_screener_records_success_heartbeat(factory):
+    run_screener(top_n=1)
+    with factory() as session:
+        beats = recent_heartbeats(session, "premarket_screen")
+    assert len(beats) == 1 and beats[0].ok is True
+
+
+def test_screener_records_failure_heartbeat(factory, monkeypatch):
+    import app.mcp.tool_screener as mod
+
+    def boom(_path):
+        raise RuntimeError("universe exploded")
+
+    monkeypatch.setattr(mod, "load_universe", boom)
+    with pytest.raises(RuntimeError):
+        run_screener(top_n=1)
+    with factory() as session:
+        beats = recent_heartbeats(session, "premarket_screen")
+    assert len(beats) == 1 and beats[0].ok is False
+    assert "universe exploded" in beats[0].detail
