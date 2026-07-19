@@ -3,6 +3,7 @@ import datetime as dt
 from app.config import get_settings
 from app.mcp import runtime
 from app.services import briefing_service
+from app.util.trading_day import et_trading_day
 
 
 def get_stock_briefing(symbol: str) -> dict:
@@ -15,6 +16,6 @@ def get_stock_briefing(symbol: str) -> dict:
         price_provider=runtime.get_price_provider(),
         news_provider=runtime.get_news_provider(),
         fundamentals_provider=runtime.get_fundamentals_provider(),
-        as_of=dt.date.today(),
+        as_of=et_trading_day(dt.datetime.now(dt.UTC)),
         lookback_days=get_settings().lookback_days,
     )

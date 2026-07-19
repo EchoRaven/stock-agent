@@ -4,12 +4,14 @@ from fastmcp import FastMCP
 from app.mcp.tool_backtest import run_backtest
 from app.mcp.tool_briefing import get_stock_briefing
 from app.mcp.tool_decision import submit_decision
+from app.mcp.tool_orders import get_pending_orders
 from app.mcp.tool_screener import run_screener
 
 
 def build_server() -> FastMCP:
     mcp = FastMCP("stock-agent")
-    for fn in (run_screener, get_stock_briefing, submit_decision, run_backtest):
+    for fn in (run_screener, get_stock_briefing, submit_decision, run_backtest,
+               get_pending_orders):
         mcp.tool(fn)
     return mcp
 

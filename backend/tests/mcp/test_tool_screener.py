@@ -8,6 +8,7 @@ from app.data.base import PriceProvider
 from app.mcp.tool_screener import run_screener
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.signal_repo import get_signals
+from app.util.trading_day import et_trading_day
 from tests.helpers import make_bars
 
 
@@ -32,13 +33,13 @@ def factory(monkeypatch):
 
 def test_run_screener_returns_ranked_and_persists(factory):
     out = run_screener(top_n=3)
-    assert out["as_of"] == dt.date.today().isoformat()
+    assert out["as_of"] == et_trading_day(dt.datetime.now(dt.UTC)).isoformat()
     assert len(out["results"]) == 3
     assert out["results"][0]["rank"] == 1
     assert out["results"][0]["symbol"] == "AAPL"  # 唯一上升趋势的票排第一
     assert set(out["results"][0]["parts"]) == {"trend", "momentum", "volume"}
     with factory() as session:
-        rows = get_signals(session, dt.date.today())
+        rows = get_signals(session, et_trading_day(dt.datetime.now(dt.UTC)))
     assert len(rows) == 3 and rows[0].symbol == "AAPL"
 
 

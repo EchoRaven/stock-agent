@@ -13,6 +13,7 @@ from app.services.analysis_service import default_screener, run_screen_on_bars
 from app.services.market_data_service import fetch_bars
 from app.services.report_service import generate_daily_report
 from app.store.db import init_db, make_engine, make_session_factory
+from app.util.trading_day import et_trading_day
 
 
 def _positive_top_n(value: str) -> int:
@@ -66,7 +67,7 @@ def _warn_skipped(skipped: list) -> None:
 def cmd_screen(args, provider=None) -> int:
     settings = get_settings()
     provider = provider or _default_provider(settings)
-    as_of = dt.date.today()
+    as_of = et_trading_day(dt.datetime.now(dt.UTC))
     symbols = load_universe(args.universe)
     top_n = args.top if args.top is not None else settings.top_n
     start = as_of - dt.timedelta(days=settings.lookback_days)
@@ -104,7 +105,7 @@ def cmd_backtest(args, provider=None) -> int:
 def cmd_report(args, session=None) -> int:
     """盘后日报(当日 signals + decisions 汇总):落库 + 写文件。薄壳,业务在 report_service。"""
     settings = get_settings()
-    report_date = args.date or dt.date.today()
+    report_date = args.date or et_trading_day(dt.datetime.now(dt.UTC))
     own_session = session is None
     if own_session:
         engine = make_engine(settings.db_path)

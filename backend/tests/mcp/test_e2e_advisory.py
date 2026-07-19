@@ -14,6 +14,7 @@ from app.mcp.tool_decision import submit_decision
 from app.mcp.tool_screener import run_screener
 from app.services.report_service import generate_daily_report
 from app.store.db import init_db, make_engine, make_session_factory
+from app.util.trading_day import et_trading_day
 from tests.helpers import make_bars, make_decision_payload
 
 
@@ -49,7 +50,7 @@ def wired(monkeypatch):
 
 
 def test_full_advisory_round(wired, tmp_path):
-    today = dt.date.today()
+    today = et_trading_day(dt.datetime.now(dt.UTC))
 
     # 1. 盘前筛选:落库快照,AAPL(唯一上升趋势)排第一
     screen = run_screener(top_n=3)

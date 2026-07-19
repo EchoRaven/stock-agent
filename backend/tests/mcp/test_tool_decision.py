@@ -3,10 +3,12 @@ import datetime as dt
 import pytest
 
 import app.mcp.runtime as runtime
+from app.data.base import PriceProvider
 from app.mcp.tool_decision import submit_decision
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import get_decisions
-from tests.helpers import make_decision_payload
+from app.store.repos.settings_repo import MODE_SEMI_AUTO, set_mode
+from tests.helpers import make_bars, make_decision_payload
 
 
 @pytest.fixture
@@ -31,3 +33,19 @@ def test_invalid_payload_rejected_not_raised(factory):
     assert "confidence" in result["error"]
     with factory() as session:
         assert get_decisions(session, dt.date(2026, 7, 17)) == []
+
+
+class AnchoredPrices(PriceProvider):
+    def get_daily_bars(self, symbol, start, end):
+        return make_bars(start=(end - dt.timedelta(days=13)).isoformat(), days=10, base=100.0)
+
+
+def test_db_semi_auto_routes_via_tool(factory, monkeypatch):
+    # mode 从 DB 读;闸门参考价由服务端 provider 取,payload 无价格通道
+    monkeypatch.setattr(runtime, "get_price_provider", lambda: AnchoredPrices())
+    with factory() as session:
+        set_mode(session, MODE_SEMI_AUTO)
+        session.commit()
+    result = submit_decision(make_decision_payload())
+    assert result["mode"] == "semi_auto"
+    assert result["order"]["status"] == "pending_confirmation"
