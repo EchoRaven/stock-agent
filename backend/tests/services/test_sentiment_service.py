@@ -2,7 +2,7 @@ import pytest
 
 from app.data.sanitize import DELIM_CLOSE, DELIM_OPEN, INJECTION_NOTICE
 from app.llm.gemini import GeminiClient
-from app.services.sentiment_service import score_news_sentiment
+from app.services.sentiment_service import build_sentiment_prompt, score_news_sentiment
 
 
 class FakeClient:
@@ -90,6 +90,25 @@ def test_different_inputs_not_cached_together():
     score_news_sentiment(client, ["headline A"], "SYM_DIFF")
     score_news_sentiment(client, ["headline B"], "SYM_DIFF")
     assert len(client.calls) == 2
+
+
+def test_build_sentiment_prompt_sanitizes_each_news_item():
+    prompt = build_sentiment_prompt(["<b>Big</b>   news\nSECOND LINE"], "AAPL")
+    assert "<b>" not in prompt
+    assert "Big news SECOND LINE" in prompt
+
+
+def test_build_sentiment_prompt_truncates_long_news_item():
+    long = "A" * 1000
+    prompt = build_sentiment_prompt([long], "AAPL")
+    assert ("A" * 1000) not in prompt
+    assert ("A" * 400) in prompt
+
+
+def test_build_sentiment_prompt_uses_delimiter_constants():
+    prompt = build_sentiment_prompt(["some news"], "AAPL")
+    assert DELIM_OPEN in prompt
+    assert DELIM_CLOSE in prompt
 
 
 @pytest.mark.network

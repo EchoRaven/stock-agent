@@ -7,7 +7,7 @@
 import hashlib
 import logging
 
-from app.data.sanitize import wrap_untrusted
+from app.data.sanitize import DELIM_OPEN, DELIM_CLOSE, sanitize_text, wrap_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +27,12 @@ _PROMPT_TEMPLATE = (
 
 
 def build_sentiment_prompt(news_texts: list, symbol: str) -> str:
-    body = "\n".join(f"- {t}" for t in news_texts)
+    body = "\n".join(f"- {sanitize_text(t)}" for t in news_texts)
     news_block = wrap_untrusted(body)
     return _PROMPT_TEMPLATE.format(
         symbol=symbol, news_block=news_block,
-        delim_open="<<<UNTRUSTED_EXTERNAL_CONTENT_START>>>",
-        delim_close="<<<UNTRUSTED_EXTERNAL_CONTENT_END>>>",
+        delim_open=DELIM_OPEN,
+        delim_close=DELIM_CLOSE,
     )
 
 
