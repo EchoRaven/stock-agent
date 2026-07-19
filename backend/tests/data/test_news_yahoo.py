@@ -119,6 +119,34 @@ def test_news_empty_list_returns_empty(monkeypatch):
     assert out == []
 
 
+def test_non_dict_provider_entry_skipped_others_kept(monkeypatch):
+    bad = _entry(title="bad provider", pub="2026-07-12T00:00:00Z")
+    bad["content"]["provider"] = "Reuters"  # malformed: str instead of dict
+    good = _entry(title="good entry", pub="2026-07-13T00:00:00Z")
+    monkeypatch.setattr(mod.yf, "Ticker", lambda sym: FakeTicker([bad, good]))
+    out = YahooNewsProvider().get_company_news("AAPL", START, END)
+    assert [n.headline for n in out] == ["good entry"]
+
+
+def test_non_dict_url_entry_skipped_others_kept(monkeypatch):
+    bad = _entry(title="bad url", pub="2026-07-12T00:00:00Z")
+    bad["content"]["canonicalUrl"] = "https://example.com/malformed"  # malformed: str instead of dict
+    good = _entry(title="good entry", pub="2026-07-13T00:00:00Z")
+    monkeypatch.setattr(mod.yf, "Ticker", lambda sym: FakeTicker([bad, good]))
+    out = YahooNewsProvider().get_company_news("AAPL", START, END)
+    assert [n.headline for n in out] == ["good entry"]
+
+
+def test_range_filter_boundary_inclusive(monkeypatch):
+    raw = [
+        _entry(title="at start", pub="2026-07-10T00:00:00Z"),
+        _entry(title="at end", pub="2026-07-17T00:00:00Z"),
+    ]
+    monkeypatch.setattr(mod.yf, "Ticker", lambda sym: FakeTicker(raw))
+    out = YahooNewsProvider().get_company_news("AAPL", START, END)
+    assert {n.headline for n in out} == {"at start", "at end"}
+
+
 @pytest.mark.network
 def test_yahoo_news_real_smoke():
     """真实联网:pytest -m network 手动运行。容忍空列表(Yahoo 可能无最新新闻)。"""

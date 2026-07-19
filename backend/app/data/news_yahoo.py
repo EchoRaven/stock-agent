@@ -25,28 +25,42 @@ class YahooNewsProvider(NewsProvider):
 
         items = []
         for entry in raw:
-            c = entry.get("content") if isinstance(entry, dict) else None
-            if not isinstance(c, dict):
-                continue
-
-            title = str(c.get("title") or "").strip()
-            if not title:
-                continue
-
-            pub = c.get("pubDate")
             try:
-                published_at = dt.datetime.fromisoformat(str(pub).replace("Z", "+00:00")).date()
-            except (ValueError, TypeError):
+                c = entry.get("content") if isinstance(entry, dict) else None
+                if not isinstance(c, dict):
+                    continue
+
+                title = str(c.get("title") or "").strip()
+                if not title:
+                    continue
+
+                pub = c.get("pubDate")
+                try:
+                    published_at = dt.datetime.fromisoformat(str(pub).replace("Z", "+00:00")).date()
+                except (ValueError, TypeError):
+                    continue
+
+                summary = str(c.get("summary") or "")
+
+                provider = c.get("provider")
+                if provider is None:
+                    provider = {}
+                elif not isinstance(provider, dict):
+                    continue  # 畸形 provider(非 dict),跳过该条而非崩溃
+                source = str(provider.get("displayName") or "Yahoo Finance")
+
+                cu = c.get("canonicalUrl") or c.get("clickThroughUrl")
+                if cu is None:
+                    cu = {}
+                elif not isinstance(cu, dict):
+                    continue  # 畸形 url 字段(非 dict),跳过该条而非崩溃
+                url = str(cu.get("url") or "")
+
+                if start <= published_at <= end:
+                    items.append(NewsItem(published_at, title, summary, source, url))
+            except Exception as exc:  # 单条解析异常绝不能拖垮整批,跳过该条继续
+                logger.warning("yahoo 单条新闻解析失败(%s),跳过该条", exc)
                 continue
-
-            summary = str(c.get("summary") or "")
-            provider = c.get("provider") or {}
-            source = str(provider.get("displayName") or "Yahoo Finance")
-            cu = c.get("canonicalUrl") or c.get("clickThroughUrl") or {}
-            url = str(cu.get("url") or "")
-
-            if start <= published_at <= end:
-                items.append(NewsItem(published_at, title, summary, source, url))
 
         items.sort(key=lambda n: n.published_at, reverse=True)
         return items[: self._max_items]
