@@ -26,6 +26,7 @@ from app.services.committee_service import run_committee
 from app.services.decision_service import TRADE_ACTIONS, submit_decision
 from app.services.market_data_service import fetch_bars, latest_closes_for, open_prices_for
 from app.services.memory_service import get_committee_context
+from app.services.reflection_service import reflect_on_closed_trades
 from app.services.analysis_service import run_screen_on_bars
 from app.store.repos.order_repo import STATUS_SUBMITTED, get_orders_by_status
 from app.store.repos.paper_repo import get_account, get_positions
@@ -170,6 +171,17 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             fills.extend(settle_open(session, as_of, leftover_prices))
             session.commit()
 
+    # ADVISORY CONTEXT ONLY(Phase 2,与 memory_context 同款红线):对本轮及以往
+    # 已平仓的模拟盘持仓写一次性复盘(均价法确定性算出的已实现盈亏 + 可选 LLM
+    # 教训),幂等(以 sell_fill_id 为键),只写 memory_entries,不改变本轮任何
+    # 下单/撮合结果。任何失败都不能中断已经跑完的交易循环本身。
+    try:
+        trade_reviews = reflect_on_closed_trades(session, gemini_client, now=now)
+        session.commit()
+    except Exception:
+        logger.exception("trade cycle: post-mortem reflection failed")
+        trade_reviews = []
+
     return {
         "as_of": as_of.isoformat(),
         "mode": get_mode(session),
@@ -179,4 +191,5 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
         "decisions": decisions,
         "fills": fills,
         "gemini_calls": gemini_calls,
+        "trade_reviews": trade_reviews,
     }

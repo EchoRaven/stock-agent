@@ -16,6 +16,7 @@ from app.screener.universe import load_universe
 from app.services.analysis_service import default_screener, run_screen_on_bars
 from app.services.market_data_service import fetch_bars
 from app.services.news_sentiment_service import get_symbol_sentiment
+from app.services.reflection_service import reflect_on_closed_trades
 from app.services.report_service import generate_daily_report
 from app.services.trade_cycle_service import run_trade_cycle
 from app.store.db import init_db, make_engine, make_session_factory
@@ -60,6 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="screen → 四角色委员会(Gemini)→ 闸门下单 的每日交易循环")
     tc.add_argument("--max-eval", type=int, default=None, help="最多评估的标的数(缺省=全部)")
     tc.add_argument("--no-settle", action="store_true", help="跳过本轮撮合(只提交订单)")
+
+    sub.add_parser("reflect", help="对已平仓模拟盘交易补写复盘(均价法已实现盈亏 "
+                                   "+ 可选 LLM 教训);正常情况下 trade-cycle 每轮"
+                                   "已自动跑过,这是手动补跑通道")
 
     register_trading(sub)
     return parser
@@ -214,6 +219,31 @@ def cmd_trade_cycle(args, session=None, provider=None, news_provider=None,
     return 0
 
 
+def cmd_reflect(args, session=None, gemini_client=None) -> int:
+    """平仓复盘薄壳:业务全在 reflection_service。ADVISORY CONTEXT ONLY——只写
+    memory_entries,不碰下单/风控路径。gemini_client 缺省时(无 key)只写事实性
+    复盘,不生成 LLM 教训(reflect_on_closed_trades 对 gemini_client=None 安全)。
+    """
+    settings = get_settings()
+    if gemini_client is None and settings.gemini_api_key:
+        gemini_client = GeminiClient()
+    own_session = session is None
+    if own_session:
+        engine = make_engine(settings.db_path)
+        init_db(engine)
+        session = make_session_factory(engine)()
+    try:
+        reviews = reflect_on_closed_trades(session, gemini_client)
+        session.commit()
+    finally:
+        if own_session:
+            session.close()
+    print(f"# 平仓复盘:新增 {len(reviews)} 条")
+    for r in reviews:
+        print(f"  {r['title']}")
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
@@ -226,6 +256,8 @@ def main(argv=None) -> int:
         return cmd_sentiment(args)
     if args.command == "trade-cycle":
         return cmd_trade_cycle(args)
+    if args.command == "reflect":
+        return cmd_reflect(args)
     return args.func(args)  # M3 子命令(orders/mode/watchdog)经 set_defaults 分发
 
 
