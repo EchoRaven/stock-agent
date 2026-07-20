@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+live = ["futu-api>=9.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

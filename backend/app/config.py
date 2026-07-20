@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""  # 可空:无 key 时 LLM 调用返回 None 并告警,不崩;从不硬编码
     gemini_model: str = "gemini-2.5-flash"
 
+    # M4 新增(Futu 实盘适配器,默认模拟盘)
+    futu_host: str = "127.0.0.1"
+    futu_port: int = 11111                 # OpenD 默认端口
+    futu_trd_env: str = "SIMULATE"         # SIMULATE(模拟盘,默认) | REAL(实盘,需显式解锁)
+    futu_market: str = "US"                # 交易市场(US 美股)
+    futu_unlock_pwd: str = ""              # 实盘解锁交易密码;仅从 env/.env,绝不硬编码/log;REAL 才需
+    futu_allow_real: bool = False          # 硬开关:除非 True,REAL 一律拒绝(默认只允许模拟盘)
+
 
 def get_settings() -> Settings:
     return Settings()
