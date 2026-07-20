@@ -161,6 +161,29 @@ export interface MemorySeedResponse {
   inserted: number;
 }
 
+export type FactorMineVerdict = "validated" | "no_improvement" | "refuted" | "error";
+
+export interface FactorMineWindowSummary {
+  base: BacktestMetrics;
+  cand: BacktestMetrics;
+}
+
+export interface FactorMineResult {
+  factor: string;
+  params: Record<string, number>;
+  verdict: FactorMineVerdict;
+  /** Present for non-error verdicts: per-window base vs. candidate metrics. */
+  windows?: Record<string, FactorMineWindowSummary>;
+  entry_id?: number;
+  /** Present only when verdict === "error" (proposal failed before backtest). */
+  error?: string;
+}
+
+export interface FactorMineResponse {
+  results: FactorMineResult[];
+  count: number;
+}
+
 export interface StockPricePoint {
   date: string;
   close: number | null;
