@@ -13,6 +13,25 @@ export interface DashboardResponse {
   pending_orders_count: number;
 }
 
+export interface TradeDecision {
+  symbol: string;
+  action: string;
+  confidence: number;
+  shares: number | null;
+  submit_result: { status?: string; note?: string; mode?: string; [k: string]: unknown };
+}
+
+export interface TradeCycleResponse {
+  as_of: string;
+  mode: string;
+  evaluated: number;
+  skipped: unknown[];
+  errors: { symbol: string; error: string }[];
+  decisions: TradeDecision[];
+  fills: unknown[];
+  gemini_calls: number;
+}
+
 export interface SignalPart {
   score: number;
   detail: string;

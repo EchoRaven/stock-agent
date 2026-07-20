@@ -63,6 +63,19 @@ class SignalsRunRequest(BaseModel):
     top_n: int | None = Field(default=None, ge=1, le=500)
 
 
+class TradeCycleRequest(BaseModel):
+    """POST /api/trade/cycle 的请求体。安全红线:max_eval 必须有界——该端点每评估
+    一个标的就是一次行情+新闻抓取 + 一次(可能付费的)Gemini 调用,上限兼作
+    费用/配额刹车,同 SentimentRequest 的 days/max_items。universe 同样必须有
+    界——筛选(screen)这一腿不受 max_eval 覆盖,每个 universe 标的都要抓一次
+    行情,超大 universe 能在评估阶段之前就先制造几千次行情请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+    universe: list[str] | None = Field(default=None, max_length=200)
+    max_eval: int | None = Field(default=None, ge=1, le=200)
+    settle: bool = True
+
+
 class SentimentRequest(BaseModel):
     """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
     dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,
