@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_backtest import router as backtest_router
 from app.api.routes_dashboard import router as dashboard_router
 from app.api.routes_execution import router as execution_router
+from app.api.routes_factors import router as factors_router
 from app.api.routes_history import router as history_router
 from app.api.routes_memory import router as memory_router
 from app.api.routes_orders import router as orders_router
@@ -39,6 +40,7 @@ app.include_router(dashboard_router, prefix="/api")
 app.include_router(signals_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
 app.include_router(execution_router, prefix="/api")
+app.include_router(factors_router, prefix="/api")
 app.include_router(sentiment_router, prefix="/api")
 app.include_router(watchdog_router, prefix="/api")
 app.include_router(trade_router, prefix="/api")

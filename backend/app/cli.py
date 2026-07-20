@@ -10,6 +10,7 @@ from app.data.cache import CachedPriceProvider
 from app.data.fundamentals_edgar import EdgarFundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
+from app.factors.miner import mine_factors
 from app.llm.gemini import GeminiClient
 from app.report.markdown import render_backtest_report, render_screen_report
 from app.screener.universe import load_universe
@@ -65,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("reflect", help="对已平仓模拟盘交易补写复盘(均价法已实现盈亏 "
                                    "+ 可选 LLM 教训);正常情况下 trade-cycle 每轮"
                                    "已自动跑过,这是手动补跑通道")
+
+    mf = sub.add_parser("mine-factors",
+                        help="evidence-gated 自主因子挖掘:LLM 只提出受限目录内的结构化"
+                             "因子提案(不产出/执行任何代码)→ 双窗口回测门禁 → 写入知识库")
+    mf.add_argument("--n", type=int, default=3, help="本轮提案数量上限,1-5(默认 3)")
 
     register_trading(sub)
     return parser
@@ -244,6 +250,41 @@ def cmd_reflect(args, session=None, gemini_client=None) -> int:
     return 0
 
 
+def cmd_mine_factors(args, session=None, provider=None, gemini_client=None) -> int:
+    """自主因子挖掘薄壳:业务全在 app.factors.miner.mine_factors。LLM 只产出
+    受限目录内的结构化提案(不产出/执行任何代码);每条提案的两窗口回测结果
+    (validated/no_improvement/refuted)写入知识库,ADVISORY CONTEXT ONLY——
+    不碰任何下单/风控路径。gemini_client 缺省且未配置 key 时用确定性种子提案
+    (mine_factors 对 gemini_client=None 安全)。"""
+    settings = get_settings()
+    provider = provider or _default_provider(settings)
+    if gemini_client is None and settings.gemini_api_key:
+        gemini_client = GeminiClient()
+    elif gemini_client is None:
+        print("[warn] Gemini 未配置(STOCKAGENT_GEMINI_API_KEY 缺失):将使用确定性种子提案。")
+    own_session = session is None
+    if own_session:
+        engine = make_engine(settings.db_path)
+        init_db(engine)
+        session = make_session_factory(engine)()
+    try:
+        results = mine_factors(session, provider, gemini_client, n=args.n)
+        session.commit()
+    finally:
+        if own_session:
+            session.close()
+    print(f"# 因子挖掘:{len(results)} 个提案")
+    for r in results:
+        if r.get("verdict") == "error":
+            print(f"  {r['factor']}{r['params']}  [error] {r.get('error')}")
+            continue
+        print(f"  {r['factor']}{r['params']}  verdict={r['verdict']}")
+        for name, ws in r.get("windows", {}).items():
+            print(f"    [{name}] base sharpe={ws['base']['sharpe']:.2f} "
+                 f"cand sharpe={ws['cand']['sharpe']:.2f}")
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
@@ -258,6 +299,8 @@ def main(argv=None) -> int:
         return cmd_trade_cycle(args)
     if args.command == "reflect":
         return cmd_reflect(args)
+    if args.command == "mine-factors":
+        return cmd_mine_factors(args)
     return args.func(args)  # M3 子命令(orders/mode/watchdog)经 set_defaults 分发
 
 
