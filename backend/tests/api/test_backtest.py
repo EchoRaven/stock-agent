@@ -25,3 +25,11 @@ def test_backtest_universe_too_large_returns_400(client):
         "universe": [f"SYM{i}" for i in range(51)],
     })
     assert resp.status_code == 400
+
+
+def test_backtest_date_range_too_wide_returns_400(client):
+    # >2000 天的窗口在拉任何行情前就该被拒——离线可测(见 conftest 的联网熔断)。
+    resp = client.post("/api/backtest", json={
+        "start": "2015-01-01", "end": "2026-01-01",
+    })
+    assert resp.status_code == 400

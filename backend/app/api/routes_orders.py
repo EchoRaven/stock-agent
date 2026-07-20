@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_provider, get_session
 from app.api.schemas import RejectBody
+from app.api.security import require_token
 from app.data.base import PriceProvider
 from app.execution.order_manager import (approve_order, list_pending, order_to_dict,
                                          reject_order)
@@ -32,7 +33,7 @@ def list_orders_route(status: str | None = None,
     return list_pending(session)
 
 
-@router.post("/orders/{order_id}/approve")
+@router.post("/orders/{order_id}/approve", dependencies=[Depends(require_token)])
 def approve_route(order_id: int, session: Session = Depends(get_session),
                   provider: PriceProvider = Depends(get_provider)) -> dict:
     as_of = et_trading_day(dt.datetime.now(dt.UTC))
@@ -46,7 +47,7 @@ def approve_route(order_id: int, session: Session = Depends(get_session),
     return result
 
 
-@router.post("/orders/{order_id}/reject")
+@router.post("/orders/{order_id}/reject", dependencies=[Depends(require_token)])
 def reject_route(order_id: int, body: RejectBody = RejectBody(),
                  session: Session = Depends(get_session)) -> dict:
     result = reject_order(session, order_id, body.reason)

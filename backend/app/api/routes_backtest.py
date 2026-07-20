@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_provider
 from app.api.schemas import BacktestRequest
+from app.api.security import require_token
 from app.backtest.engine import BacktestConfig, BacktestEngine
 from app.data.base import PriceProvider
 from app.screener.universe import load_universe
@@ -17,14 +18,18 @@ from app.services.market_data_service import fetch_bars
 router = APIRouter(tags=["backtest"])
 
 MAX_UNIVERSE_SIZE = 50
+MAX_DATE_RANGE_DAYS = 2000
 
 
-@router.post("/backtest")
+@router.post("/backtest", dependencies=[Depends(require_token)])
 def run_backtest_route(body: BacktestRequest,
                        provider: PriceProvider = Depends(get_provider)) -> dict:
     if body.universe is not None and len(body.universe) > MAX_UNIVERSE_SIZE:
         raise HTTPException(status_code=400,
                             detail=f"universe too large (max {MAX_UNIVERSE_SIZE} symbols)")
+    if (body.end - body.start).days > MAX_DATE_RANGE_DAYS:
+        raise HTTPException(status_code=400,
+                            detail=f"date range too wide (max {MAX_DATE_RANGE_DAYS} days)")
     try:
         # __post_init__ 校验 start<=end / cash>0 / max_positions>=1,坏输入不触发任何取价
         config = BacktestConfig(start=body.start, end=body.end, initial_cash=body.cash,

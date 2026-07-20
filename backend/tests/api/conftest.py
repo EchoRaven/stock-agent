@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api.deps import get_provider, get_session
+from app.api.security import require_token
 from app.data.base import PriceProvider, empty_bars
 from app.main import app
 from app.store.db import init_db, make_session_factory
@@ -51,6 +52,9 @@ def session():
 def client(session):
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_provider] = lambda: FakeProvider()
+    # 已有测试不关心 CSRF token 门禁(见 tests/api/test_security.py 的专门覆盖,
+    # 那边故意不做这个 override,证明门禁真的生效)。
+    app.dependency_overrides[require_token] = lambda: None
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

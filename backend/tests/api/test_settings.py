@@ -53,3 +53,10 @@ def test_risk_params_partial_update_persists(client):
 def test_risk_params_unknown_field_rejected(client):
     resp = client.post("/api/settings/risk", json={"bogus_field": 1})
     assert resp.status_code == 422
+
+
+def test_risk_params_out_of_range_rejected(client):
+    resp = client.post("/api/settings/risk", json={"single_position_cap_pct": -0.1})
+    assert resp.status_code == 422
+    # 拒绝之后没有半吊子写入——原值保持不变
+    assert client.get("/api/settings").json()["single_position_cap_pct"] == 0.20

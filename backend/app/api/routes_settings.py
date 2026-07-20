@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_session
 from app.api.schemas import ModeUpdate, RiskParamsUpdate
+from app.api.security import require_token
 from app.store.models import SettingsRow
 from app.store.repos.settings_repo import (RISK_PARAM_FIELDS, get_app_settings, set_mode,
                                            update_risk_params)
@@ -28,7 +29,7 @@ def get_settings_route(session: Session = Depends(get_session)) -> dict:
     return _settings_to_dict(get_app_settings(session))
 
 
-@router.post("/settings/mode")
+@router.post("/settings/mode", dependencies=[Depends(require_token)])
 def set_mode_route(body: ModeUpdate, session: Session = Depends(get_session)) -> dict:
     """full_auto 未显式 confirm_full_auto 时 set_mode 内部拒绝(ValueError→400);
     这里不做任何绕过或额外放行——红线判定完全交给 settings_repo。"""
@@ -40,7 +41,7 @@ def set_mode_route(body: ModeUpdate, session: Session = Depends(get_session)) ->
     return _settings_to_dict(row)
 
 
-@router.post("/settings/risk")
+@router.post("/settings/risk", dependencies=[Depends(require_token)])
 def set_risk_route(body: RiskParamsUpdate, session: Session = Depends(get_session)) -> dict:
     fields = body.model_dump(exclude_unset=True)
     row = update_risk_params(session, **fields)
