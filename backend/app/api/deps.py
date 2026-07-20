@@ -9,7 +9,11 @@ from collections.abc import Iterator
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.data.base import PriceProvider
+from app.data.news_factory import build_news_provider
+from app.data.news_finnhub import NewsProvider
+from app.llm.gemini import GeminiClient
 from app.mcp import runtime
 
 
@@ -25,3 +29,15 @@ def get_session() -> Iterator[Session]:
 def get_provider() -> PriceProvider:
     """服务端行情源(唯一取价通道)。调用方 payload 没有价格通道。"""
     return runtime.get_price_provider()
+
+
+def get_news_provider() -> NewsProvider:
+    """服务端新闻源(唯一取新闻通道)。测试通过 dependency_overrides 注入 fake,离线。"""
+    return build_news_provider(get_settings())
+
+
+def get_gemini_client() -> GeminiClient | None:
+    """有 key 才装配 GeminiClient;无 key 返回 None——news_sentiment_service 对
+    None client 是安全的(跳过打分,不抛异常)。"""
+    settings = get_settings()
+    return GeminiClient() if settings.gemini_api_key else None

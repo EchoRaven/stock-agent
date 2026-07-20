@@ -64,3 +64,22 @@ def test_reject_non_pending_order_returns_409(client, session):
     client.post(f"/api/orders/{order_id}/reject")
     resp = client.post(f"/api/orders/{order_id}/reject")
     assert resp.status_code == 409
+
+
+def test_settle_with_no_submitted_orders_returns_empty(client, session):
+    resp = client.post("/api/orders/settle")
+    assert resp.status_code == 200
+    assert resp.json() == {"fills": [], "count": 0}
+
+
+def test_settle_fills_submitted_orders(client, session):
+    order_id = _seed_pending(session, symbol="AAPL", shares=5)
+    approved = client.post(f"/api/orders/{order_id}/approve")
+    assert approved.json()["order"]["status"] == "submitted"
+
+    resp = client.post("/api/orders/settle")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["fills"][0]["symbol"] == "AAPL"
+    assert body["fills"][0]["shares"] == 5

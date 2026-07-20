@@ -45,3 +45,19 @@ class BacktestRequest(BaseModel):
     cash: float = 100_000
     max_positions: int = 5
     universe: list[str] | None = None
+
+
+class ExecutionBackendUpdate(BaseModel):
+    """安全红线:合法值只有 settings_repo.EXECUTION_BACKENDS(paper/futu_paper)——
+    故意不在这里写 Literal 枚举(避免两处真相),校验全权委托 set_execution_backend,
+    任何其它值(含 "real"/"futu_real")在那里被 ValueError 拒绝→routes_execution.py 转 400。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    backend: str
+
+
+class SignalsRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    universe: list[str] | None = None
+    top_n: int | None = Field(default=None, ge=1, le=500)

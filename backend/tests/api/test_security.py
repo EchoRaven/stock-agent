@@ -84,3 +84,53 @@ def test_state_change_with_correct_token_succeeds(unsecured_client, token_env):
 def test_get_endpoints_do_not_require_token(unsecured_client):
     assert unsecured_client.get("/api/dashboard").status_code == 200
     assert unsecured_client.get("/api/settings").status_code == 200
+
+
+def test_execution_backend_switch_without_token_is_forbidden(unsecured_client, session):
+    from app.store.repos.settings_repo import get_execution_backend
+
+    resp = unsecured_client.post("/api/execution/backend", json={"backend": "futu_paper"})
+    assert resp.status_code == 403
+    # 无副作用:没有被悄悄切到 futu_paper
+    assert get_execution_backend(session) == "paper"
+
+
+def test_execution_backend_switch_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/execution/backend", json={"backend": "futu_paper"},
+                                 headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+    assert resp.json()["backend"] == "futu_paper"
+
+
+def test_execution_get_does_not_require_token(unsecured_client):
+    assert unsecured_client.get("/api/execution").status_code == 200
+
+
+def test_settle_without_token_is_forbidden(unsecured_client):
+    resp = unsecured_client.post("/api/orders/settle")
+    assert resp.status_code == 403
+
+
+def test_settle_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/orders/settle", headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+    assert resp.json() == {"fills": [], "count": 0}
+
+
+def test_watchdog_without_token_is_forbidden(unsecured_client):
+    resp = unsecured_client.post("/api/watchdog")
+    assert resp.status_code == 403
+
+
+def test_watchdog_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/watchdog", headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+    assert "healthy" in resp.json()
+
+
+def test_run_signals_without_token_is_forbidden(unsecured_client):
+    resp = unsecured_client.post("/api/signals/run")
+    assert resp.status_code == 403
