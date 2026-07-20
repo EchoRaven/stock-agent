@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { ApiError, apiGet, apiPost } from "@/lib/api";
@@ -109,7 +110,14 @@ export default function SignalsPage() {
               {signals.map((s) => (
                 <tr key={s.symbol}>
                   <td className="px-3 py-2 tabular-nums">{s.rank}</td>
-                  <td className="px-3 py-2 font-medium text-slate-900">{s.symbol}</td>
+                  <td className="px-3 py-2 font-medium">
+                    <Link
+                      href={`/stock/${s.symbol}`}
+                      className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
+                    >
+                      {s.symbol}
+                    </Link>
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{s.total.toFixed(4)}</td>
                   {partKeys.map((k) => (
                     <td

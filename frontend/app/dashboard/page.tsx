@@ -167,7 +167,14 @@ export default function DashboardPage() {
               <tbody className="divide-y divide-slate-100">
                 {positions.map(([symbol, p]) => (
                   <tr key={symbol}>
-                    <td className="px-3 py-2 font-medium text-slate-900">{symbol}</td>
+                    <td className="px-3 py-2 font-medium">
+                      <Link
+                        href={`/stock/${symbol}`}
+                        className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
+                      >
+                        {symbol}
+                      </Link>
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">{p.shares}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{money(p.avg_cost)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
