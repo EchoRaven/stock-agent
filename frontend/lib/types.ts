@@ -13,11 +13,16 @@ export interface DashboardResponse {
   pending_orders_count: number;
 }
 
+export interface SignalPart {
+  score: number;
+  detail: string;
+}
+
 export interface SignalResponse {
   symbol: string;
   rank: number;
   total: number;
-  parts: Record<string, number>;
+  parts: Record<string, SignalPart>;
 }
 
 export interface OrderResponse {

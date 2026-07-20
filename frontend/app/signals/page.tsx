@@ -112,8 +112,14 @@ export default function SignalsPage() {
                   <td className="px-3 py-2 font-medium text-slate-900">{s.symbol}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{s.total.toFixed(4)}</td>
                   {partKeys.map((k) => (
-                    <td key={k} className="px-3 py-2 text-right tabular-nums">
-                      {s.parts[k] !== undefined ? s.parts[k].toFixed(4) : "—"}
+                    <td
+                      key={k}
+                      className="px-3 py-2 text-right tabular-nums"
+                      title={s.parts[k]?.detail ?? ""}
+                    >
+                      {typeof s.parts[k]?.score === "number"
+                        ? s.parts[k].score.toFixed(4)
+                        : "—"}
                     </td>
                   ))}
                 </tr>
