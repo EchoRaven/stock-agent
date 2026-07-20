@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { apiGet } from "@/lib/api";
@@ -22,6 +22,39 @@ const MODE_STYLES: Record<string, string> = {
   semi_auto: "bg-amber-100 text-amber-800 border border-amber-300",
   full_auto: "bg-red-100 text-red-800 border border-red-300",
 };
+
+function TickerSearch() {
+  const router = useRouter();
+  const [ticker, setTicker] = useState("");
+
+  function go() {
+    const sym = ticker.trim().toUpperCase();
+    if (!sym) return;
+    router.push(`/stock/${sym}`);
+    setTicker("");
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        value={ticker}
+        onChange={(e) => setTicker(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") go();
+        }}
+        placeholder="代码…"
+        aria-label="Ticker search"
+        className="input w-24 sm:w-32"
+      />
+      <button
+        onClick={go}
+        className="rounded-md border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+      >
+        查
+      </button>
+    </div>
+  );
+}
 
 export default function NavBar() {
   const pathname = usePathname();
@@ -62,13 +95,16 @@ export default function NavBar() {
             ))}
           </nav>
         </div>
-        <span
-          className={`rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${
-            mode ? MODE_STYLES[mode] ?? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-400"
-          }`}
-        >
-          {mode ?? "loading…"}
-        </span>
+        <div className="flex items-center gap-3">
+          <TickerSearch />
+          <span
+            className={`rounded-full px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${
+              mode ? MODE_STYLES[mode] ?? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-400"
+            }`}
+          >
+            {mode ?? "loading…"}
+          </span>
+        </div>
       </div>
     </header>
   );

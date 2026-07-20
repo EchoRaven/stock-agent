@@ -160,3 +160,70 @@ export interface MemoryEntry {
 export interface MemorySeedResponse {
   inserted: number;
 }
+
+export interface StockPricePoint {
+  date: string;
+  close: number | null;
+  volume?: number | null;
+}
+
+export interface StockSummary {
+  num_bars: number;
+  last_date?: string | null;
+  last_close: number | null;
+  chg_1d?: number | null;
+  pct_1d: number | null;
+  chg_5d?: number | null;
+  pct_5d: number | null;
+  chg_20d?: number | null;
+  pct_20d: number | null;
+  sma20: number | null;
+  sma50: number | null;
+  rsi14: number | null;
+  avg_vol_20: number | null;
+  high_52w: number | null;
+  low_52w: number | null;
+}
+
+export interface StockNewsItem {
+  date: string;
+  source: string;
+  headline: string;
+  summary: string;
+  url: string;
+}
+
+export interface FundamentalPoint {
+  end: string;
+  value: number;
+  fiscal: string;
+}
+
+export interface StockFundamentals {
+  revenue: FundamentalPoint[];
+  net_income: FundamentalPoint[];
+  eps: FundamentalPoint[];
+}
+
+export interface StockDetail {
+  symbol: string;
+  as_of: string;
+  days: number;
+  price_series: StockPricePoint[];
+  summary: StockSummary;
+  news: StockNewsItem[];
+  fundamentals: StockFundamentals;
+}
+
+export type CommitteeRoleKey = "technical" | "fundamental" | "sentiment" | "bear";
+
+export interface StockAnalysis {
+  symbol: string;
+  as_of: string;
+  held: boolean;
+  committee: Record<CommitteeRoleKey, { summary: string }>;
+  chair: { verdict: string; bear_rebuttal: string };
+  action: "buy" | "sell" | "hold";
+  confidence: number;
+  note: string;
+}
