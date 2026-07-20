@@ -141,6 +141,47 @@ def test_full_auto_buy_creates_position_and_fill(session):
     assert result["fills"][0]["symbol"] == "AAPL"
 
 
+# ---------------------------------------------------------------------------
+# Phase 2 wiring: after settle, closed positions get an automatic post-mortem
+# written into memory (ADVISORY CONTEXT ONLY, never touches the gate/order
+# path itself — see app/services/reflection_service.py).
+# ---------------------------------------------------------------------------
+
+
+def test_full_auto_cycle_writes_trade_review_after_position_closes(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = FakeProvider({"AAPL": 100.0})
+
+    buy_gemini = FakeGemini(by_symbol={"AAPL": _committee_json("buy", 0.9)})
+    buy_result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(),
+                                 buy_gemini, now_utc=NOW_UTC, universe=["AAPL"], max_eval=1)
+    assert buy_result["trade_reviews"] == []  # nothing closed yet, still holding
+
+    later = NOW_UTC + dt.timedelta(days=3)
+    sell_gemini = FakeGemini(by_symbol={"AAPL": _committee_json("sell", 0.9)})
+    sell_result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(),
+                                  sell_gemini, now_utc=later, universe=["AAPL"], max_eval=1)
+
+    assert len(sell_result["trade_reviews"]) == 1
+    review = sell_result["trade_reviews"][0]
+    assert review["kind"] == "trade_review"
+    assert review["symbol"] == "AAPL"
+
+    from app.store.repos.memory_repo import get_entries
+    rows = get_entries(session, kind="trade_review")
+    assert len(rows) == 1
+    assert rows[0].symbol == "AAPL"
+    assert rows[0].source == "reflection"
+
+    # re-running a no-op cycle (nothing new to close) must not duplicate it.
+    noop_gemini = FakeGemini(default=_committee_json("hold", 0.5))
+    noop_result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(),
+                                  noop_gemini, now_utc=later + dt.timedelta(days=1),
+                                  universe=["AAPL"], max_eval=1)
+    assert noop_result["trade_reviews"] == []
+    assert len(get_entries(session, kind="trade_review")) == 1
+
+
 def test_premarket_fills_at_last_close_when_open_unavailable(session):
     # 盘前跑一轮:当日开盘价尚未发布,应回退到最近收盘价成交,而非"无开盘价"被撤单。
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)

@@ -13,6 +13,7 @@ from app.api.routes_dashboard import router as dashboard_router
 from app.api.routes_execution import router as execution_router
 from app.api.routes_memory import router as memory_router
 from app.api.routes_orders import router as orders_router
+from app.api.routes_reflect import router as reflect_router
 from app.api.routes_sentiment import router as sentiment_router
 from app.api.routes_settings import router as settings_router
 from app.api.routes_signals import router as signals_router
@@ -41,6 +42,7 @@ app.include_router(sentiment_router, prefix="/api")
 app.include_router(watchdog_router, prefix="/api")
 app.include_router(trade_router, prefix="/api")
 app.include_router(memory_router, prefix="/api")
+app.include_router(reflect_router, prefix="/api")
 app.include_router(stock_router, prefix="/api")
 
 
