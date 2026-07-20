@@ -134,3 +134,13 @@ def test_watchdog_with_correct_token_succeeds(unsecured_client, token_env):
 def test_run_signals_without_token_is_forbidden(unsecured_client):
     resp = unsecured_client.post("/api/signals/run")
     assert resp.status_code == 403
+
+
+def test_run_signals_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/signals/run",
+                                 json={"universe": ["AAPL", "MSFT"], "top_n": 2},
+                                 headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+    symbols = {s["symbol"] for s in resp.json()}
+    assert symbols == {"AAPL", "MSFT"}

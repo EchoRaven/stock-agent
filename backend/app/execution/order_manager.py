@@ -89,7 +89,8 @@ def handle_decision(session: Session, decision: DecisionRow, mode: str,
                                   order_repo.STATUS_APPROVED, mode,
                                   decision_id=decision.id)
     row = _get_broker(session).submit(session, row)
-    return {"order": order_to_dict(row), "note": "submitted to paper broker"}
+    return {"order": order_to_dict(row),
+            "note": f"submitted to {get_execution_backend(session)} broker"}
 
 
 def list_pending(session: Session) -> list:
