@@ -100,6 +100,15 @@ class MineFactorsRequest(BaseModel):
     n: int = Field(default=3, ge=1, le=5)
 
 
+class PicksRequest(BaseModel):
+    """POST /api/picks 请求体。安全红线:n 必须有界——每个候选标的都会触发一次
+    (可能付费的)Gemini 调用,上限兼作费用/配额刹车,同 SentimentRequest 的
+    days/max_items、TradeCycleRequest 的 max_eval/universe 上限思路。"""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int = Field(default=8, ge=1, le=15)
+
+
 class SentimentRequest(BaseModel):
     """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
     dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,
