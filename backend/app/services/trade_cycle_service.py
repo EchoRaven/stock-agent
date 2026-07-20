@@ -94,12 +94,14 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
         pos.shares * prices.get(sym, pos.avg_cost) for sym, pos in positions.items()
     )
 
-    # 撮合日开盘价一次性取全(比逐标的现取便宜);增量 settle 时按 symbol 索引。
+    # 撮合价:优先用撮合日开盘价(next-open 语义);但盘前/非交易时段当日开盘价
+    # 尚未发布时,回退到最近收盘价(latest close,即上面 prices,一段过去价格,
+    # 非未来函数),让模拟盘能按最优可得价立即成交,而不是因"无开盘价"被整轮撤单。
     # 安全红线(见模块顶部+settle_open 文档):settle_open 会撤销所有当前
-    # STATUS_SUBMITTED 但 symbol 不在传入 open_prices 里的订单——这里传的是
-    # {symbol: price} 单标的字典,绝不能把这份全量 open_prices 整个传进去,
-    # 否则会把"尚未轮到评估、仍处于其它状态"的订单一并撬动。
-    open_prices = open_prices_for(price_provider, eval_symbols, as_of) if settle else {}
+    # STATUS_SUBMITTED 但 symbol 不在传入价格字典里的订单——下面逐标的撮合时只
+    # 传 {symbol: price} 单标的字典,绝不能把这份全量 fill_prices 整个传进去。
+    fill_prices = ({**prices, **open_prices_for(price_provider, eval_symbols, as_of)}
+                   if settle else {})
 
     decisions = []
     errors = []
@@ -140,7 +142,7 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             # 这里不会误撮合;advisory/hold 根本没有 "order" 键。
             order = result.get("order")
             if settle and order is not None and order["status"] == STATUS_SUBMITTED:
-                price = open_prices.get(symbol)
+                price = fill_prices.get(symbol)
                 symbol_open_prices = {symbol: price} if price is not None else {}
                 fills.extend(settle_open(session, as_of, symbol_open_prices))
                 session.commit()
@@ -156,7 +158,10 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             row.symbol for row in get_orders_by_status(session, STATUS_SUBMITTED)
         })
         if leftover_symbols:
-            leftover_prices = open_prices_for(price_provider, leftover_symbols, as_of)
+            leftover_prices = {
+                **latest_closes_for(price_provider, leftover_symbols, as_of),
+                **open_prices_for(price_provider, leftover_symbols, as_of),
+            }
             fills.extend(settle_open(session, as_of, leftover_prices))
             session.commit()
 

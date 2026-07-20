@@ -46,6 +46,13 @@ class FakeProvider(PriceProvider):
              "close": price, "volume": 1_000_000.0}, index=idx)
 
 
+class PreMarketProvider(FakeProvider):
+    """模拟盘前:当日(end)K线尚未发布,只有到 end-1 的历史 → 当日开盘价缺失。"""
+
+    def get_daily_bars(self, symbol, start, end):
+        return super().get_daily_bars(symbol, start, end - dt.timedelta(days=1))
+
+
 class RaisingNewsProvider(NewsProvider):
     """指定 symbol 抓新闻时抛异常,模拟单标的材料抓取故障(不影响其余标的)。"""
 
@@ -132,6 +139,21 @@ def test_full_auto_buy_creates_position_and_fill(session):
     assert get_account(session, 100_000.0).cash < 100_000.0
     assert len(result["fills"]) == 1
     assert result["fills"][0]["symbol"] == "AAPL"
+
+
+def test_premarket_fills_at_last_close_when_open_unavailable(session):
+    # 盘前跑一轮:当日开盘价尚未发布,应回退到最近收盘价成交,而非"无开盘价"被撤单。
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = PreMarketProvider({"AAPL": 100.0})
+    gemini = FakeGemini(by_symbol={"AAPL": _committee_json("buy", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["AAPL"], max_eval=1)
+
+    positions = get_positions(session)
+    assert "AAPL" in positions and positions["AAPL"].shares == 200  # 按最近收盘价 100 成交
+    assert len(result["fills"]) == 1
+    assert get_account(session, 100_000.0).cash < 100_000.0
 
 
 # ---------------------------------------------------------------------------
