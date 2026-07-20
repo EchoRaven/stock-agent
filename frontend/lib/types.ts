@@ -24,6 +24,18 @@ export interface MarkPosition {
   unrealized_pct: number | null;
 }
 
+/** No-LLM market-context signal: SPY vs its 200-day SMA. Context only — never
+ * drives order submission. distance_pct is already a percentage-point value
+ * (see backend/app/api/routes_market.py), do NOT run through signedPct. */
+export interface MarketRegime {
+  as_of: string;
+  available: boolean;
+  risk_on: boolean | null;
+  spy_close: number | null;
+  spy_sma200: number | null;
+  distance_pct: number | null;
+}
+
 export interface MarksResponse {
   as_of: string;
   positions: MarkPosition[];

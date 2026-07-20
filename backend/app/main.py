@@ -13,6 +13,7 @@ from app.api.routes_dashboard import router as dashboard_router
 from app.api.routes_execution import router as execution_router
 from app.api.routes_factors import router as factors_router
 from app.api.routes_history import router as history_router
+from app.api.routes_market import router as market_router
 from app.api.routes_marks import router as marks_router
 from app.api.routes_memory import router as memory_router
 from app.api.routes_orders import router as orders_router
@@ -54,6 +55,7 @@ app.include_router(reflect_router, prefix="/api")
 app.include_router(stock_router, prefix="/api")
 app.include_router(history_router, prefix="/api")
 app.include_router(marks_router, prefix="/api")
+app.include_router(market_router, prefix="/api")
 app.include_router(picks_router, prefix="/api")
 app.include_router(watchlist_router, prefix="/api")
 
