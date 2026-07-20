@@ -97,6 +97,19 @@ def test_trade_cycle_max_eval_out_of_bounds_returns_422(client, session):
     assert resp.status_code == 422
 
 
+def test_trade_cycle_universe_too_long_returns_422(client, session):
+    # 安全红线:universe 未加界会放大筛选环节的行情抓取量(不受 max_eval 覆盖,
+    # 那只管评估阶段的委员会/LLM 调用数)。覆盖 news/fundamentals/gemini 依赖,
+    # 保证就算校验还没生效(RED 阶段)整条编排也不会真的发起网络请求。
+    _override()
+    try:
+        resp = client.post("/api/trade/cycle",
+                           json={"universe": [f"SYM{i}" for i in range(201)]})
+    finally:
+        _clear_overrides()
+    assert resp.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # token 门禁(该端点可能在 semi/full_auto 下建单,必须 CSRF token 门禁)。
 # ---------------------------------------------------------------------------

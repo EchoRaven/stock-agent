@@ -9,7 +9,11 @@
 - shares 全部由服务端根据账户权益 + 单票仓位上限算出,绝不采信 LLM 给的任何
   数字(委员会草案里根本不含 shares 字段);
 - 单只标的的材料抓取/委员会/提交任一环节异常都被本地捕获记入 errors,不让
-  一只标的的故障中断整轮循环(其余标的照常评估)。
+  一只标的的故障中断整轮循环(其余标的照常评估);
+- settle=True 时逐标的立即撮合(而非整轮循环结束后一次性撮合),让持仓/现金
+  在下一只标的过闸门前就已落库,TotalPositionCapRule/SinglePositionCapRule
+  才能在同一轮里跨标的累计生效,而不是每笔都读循环开始前的同一份快照
+  (defense-in-depth finding:聚合仓位上限此前不跨标的联动)。
 """
 import datetime as dt
 import logging
@@ -90,8 +94,16 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
         pos.shares * prices.get(sym, pos.avg_cost) for sym, pos in positions.items()
     )
 
+    # 撮合日开盘价一次性取全(比逐标的现取便宜);增量 settle 时按 symbol 索引。
+    # 安全红线(见模块顶部+settle_open 文档):settle_open 会撤销所有当前
+    # STATUS_SUBMITTED 但 symbol 不在传入 open_prices 里的订单——这里传的是
+    # {symbol: price} 单标的字典,绝不能把这份全量 open_prices 整个传进去,
+    # 否则会把"尚未轮到评估、仍处于其它状态"的订单一并撬动。
+    open_prices = open_prices_for(price_provider, eval_symbols, as_of) if settle else {}
+
     decisions = []
     errors = []
+    fills = []
     gemini_calls = 0
     for symbol in eval_symbols:
         try:
@@ -120,19 +132,33 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
                 "confidence": committee["confidence"], "shares": shares,
                 "submit_result": result,
             })
+            # 安全红线核心:full_auto 买/卖过闸门后立刻撮合(而不是拖到整轮循环
+            # 结束后一次性撮合),让持仓/现金马上落库,下一只标的的闸门判定才能
+            # 看见累计后的敞口——否则 TotalPositionCapRule/SinglePositionCapRule
+            # 在同一轮里全部读的是循环开始前的同一份快照,永远不会跨标的联动。
+            # semi_auto 走 PENDING_CONFIRMATION(等人工批准),不是 SUBMITTED,
+            # 这里不会误撮合;advisory/hold 根本没有 "order" 键。
+            order = result.get("order")
+            if settle and order is not None and order["status"] == STATUS_SUBMITTED:
+                price = open_prices.get(symbol)
+                symbol_open_prices = {symbol: price} if price is not None else {}
+                fills.extend(settle_open(session, as_of, symbol_open_prices))
+                session.commit()
         except Exception as exc:
             logger.exception("trade cycle failed for %s", symbol)
             errors.append({"symbol": symbol, "error": str(exc)})
 
-    fills = []
     if settle:
-        submitted_symbols = sorted({
+        # 兜底扫尾:正常情况下本轮产生的每笔 SUBMITTED 订单都已在上面逐标的撮合
+        # 掉了(FILLED/CANCELLED,不会再是 SUBMITTED),这里只会捞到本轮之外遗留
+        # 的(如上次 settle=False 跑过的)订单——不会对本轮订单重复撮合。
+        leftover_symbols = sorted({
             row.symbol for row in get_orders_by_status(session, STATUS_SUBMITTED)
         })
-        open_prices = (open_prices_for(price_provider, submitted_symbols, as_of)
-                      if submitted_symbols else {})
-        fills = settle_open(session, as_of, open_prices)
-        session.commit()
+        if leftover_symbols:
+            leftover_prices = open_prices_for(price_provider, leftover_symbols, as_of)
+            fills.extend(settle_open(session, as_of, leftover_prices))
+            session.commit()
 
     return {
         "as_of": as_of.isoformat(),

@@ -25,6 +25,8 @@ from app.store.repos.paper_repo import get_account, get_positions, set_position
 from app.store.repos.settings_repo import (MODE_ADVISORY, MODE_FULL_AUTO, set_mode,
                                            update_risk_params)
 
+FIVE_SYMBOLS = ["ONE", "TWO", "THREE", "FOUR", "FIVE"]
+
 NOW_UTC = dt.datetime(2026, 7, 17, 16, 0, tzinfo=dt.UTC)
 
 
@@ -245,3 +247,77 @@ def test_one_symbol_briefing_failure_does_not_abort_others(session):
     aapl_decision = next(d for d in result["decisions"] if d["symbol"] == "AAPL")
     assert aapl_decision["action"] == "buy"
     assert aapl_decision["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+
+
+# ---------------------------------------------------------------------------
+# defense-in-depth: aggregate position caps (single/total) must bind
+# CUMULATIVELY within one cycle. Bug: run_trade_cycle used to submit every
+# decision against the SAME pre-cycle account snapshot (settle happened once,
+# after the whole loop) — so N buys that each individually pass the total cap
+# could jointly blow way past it. Fix: settle each submitted order immediately
+# so the next symbol's gate check sees the accumulated exposure.
+# ---------------------------------------------------------------------------
+
+
+def test_total_cap_binds_cumulatively_within_cycle(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    # max_new_positions_per_day raised so MaxNewPositionsRule (a simple count)
+    # doesn't bind first and mask whether the *value* caps are cumulative.
+    update_risk_params(session, max_new_positions_per_day=5,
+                       single_position_cap_pct=0.20, total_position_cap_pct=0.80)
+    # $150 (not a round divisor of the $20k single-position budget) leaves the
+    # per-buy value ($19,950 for 133 shares) with headroom under the single-
+    # position cap, so PaperBroker's fill slippage (which nudges equity down a
+    # few dollars per fill) can't make SinglePositionCapRule bind first and
+    # mask whether TotalPositionCapRule itself binds cumulatively.
+    price = 150.0
+    provider = FakeProvider({sym: price for sym in FIVE_SYMBOLS})
+    gemini = FakeGemini(by_symbol={sym: _committee_json("buy", 0.9) for sym in FIVE_SYMBOLS})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=FIVE_SYMBOLS, max_eval=None,
+                             settle=True)
+
+    assert result["errors"] == []
+    buy_decisions = [d for d in result["decisions"] if d["action"] == "buy"]
+    assert len(buy_decisions) == len(FIVE_SYMBOLS)  # sizing itself never blocks a buy
+    # at least one buy must have been REJECTED by the gate on total-position-cap
+    # grounds — proving the cap actually binds cumulatively, not just once.
+    rejected = [d for d in buy_decisions
+               if d["submit_result"]["order"]["status"] == STATUS_REJECTED]
+    assert rejected, "expected at least one buy rejected by the cumulative total-position cap"
+    assert any("total-position cap" in d["submit_result"]["order"]["reason"] for d in rejected)
+
+    positions = get_positions(session)
+    assert 0 < len(positions) < len(FIVE_SYMBOLS)  # not all 5 fit
+    deployed = sum(p.shares * price for p in positions.values())
+    account = get_account(session, 100_000.0)
+    equity = account.cash + deployed
+    # the whole point of the fix: total exposure stays within the 80% cap
+    # (modulo float slop), NOT the ~100% the pre-fix bug over-deployed to.
+    assert deployed <= 0.80 * equity + 1e-6
+    assert deployed < 90_000.0
+
+
+# ---------------------------------------------------------------------------
+# settle=False preserved: orders stay SUBMITTED, no positions materialize —
+# incremental settling must be gated on the `settle` flag exactly like the
+# old single end-of-loop settle was.
+# ---------------------------------------------------------------------------
+
+
+def test_settle_false_leaves_orders_submitted_no_positions(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = FakeProvider({"AAPL": 100.0})
+    gemini = FakeGemini(by_symbol={"AAPL": _committee_json("buy", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["AAPL"], max_eval=1, settle=False)
+
+    d = result["decisions"][0]
+    assert d["action"] == "buy"
+    assert d["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+    assert result["fills"] == []
+    assert get_positions(session) == {}
+    submitted = get_orders_by_status(session, STATUS_SUBMITTED)
+    assert len(submitted) == 1 and submitted[0].symbol == "AAPL"
