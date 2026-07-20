@@ -161,6 +161,18 @@ class MemoryEntryRow(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
 
+class WatchlistRow(Base):
+    """自选股清单,一行一标的(symbol 唯一)。价格不落库——GET 路由实时取价。"""
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("symbol", name="uq_watchlist_symbol"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    added_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+
+
 class AlertRow(Base):
     """系统告警(watchdog 降级等),落库可回看。"""
 

@@ -24,6 +24,7 @@ from app.api.routes_signals import router as signals_router
 from app.api.routes_stock import router as stock_router
 from app.api.routes_trade import router as trade_router
 from app.api.routes_watchdog import router as watchdog_router
+from app.api.routes_watchlist import router as watchlist_router
 
 app = FastAPI(title="stock-agent API")
 
@@ -32,7 +33,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    # DELETE: watchlist 移除自选(app/api/routes_watchlist.py)是本仓库第一个
+    # DELETE 端点,浏览器发起前会先 CORS 预检,必须在白名单里放行。
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -52,6 +55,7 @@ app.include_router(stock_router, prefix="/api")
 app.include_router(history_router, prefix="/api")
 app.include_router(marks_router, prefix="/api")
 app.include_router(picks_router, prefix="/api")
+app.include_router(watchlist_router, prefix="/api")
 
 
 @app.get("/api/health")
