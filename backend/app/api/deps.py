@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.data.base import PriceProvider
+from app.data.fundamentals_edgar import FundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.news_finnhub import NewsProvider
 from app.llm.gemini import GeminiClient
@@ -34,6 +35,11 @@ def get_provider() -> PriceProvider:
 def get_news_provider() -> NewsProvider:
     """服务端新闻源(唯一取新闻通道)。测试通过 dependency_overrides 注入 fake,离线。"""
     return build_news_provider(get_settings())
+
+
+def get_fundamentals_provider() -> FundamentalsProvider:
+    """服务端财报源(唯一取财报通道)。测试通过 dependency_overrides 注入 fake,离线。"""
+    return runtime.get_fundamentals_provider()
 
 
 def get_gemini_client() -> GeminiClient | None:

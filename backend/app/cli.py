@@ -7,6 +7,7 @@ from app.backtest.engine import BacktestConfig, BacktestEngine
 from app.cli_trading import register as register_trading
 from app.config import get_settings
 from app.data.cache import CachedPriceProvider
+from app.data.fundamentals_edgar import EdgarFundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
 from app.llm.gemini import GeminiClient
@@ -16,6 +17,7 @@ from app.services.analysis_service import default_screener, run_screen_on_bars
 from app.services.market_data_service import fetch_bars
 from app.services.news_sentiment_service import get_symbol_sentiment
 from app.services.report_service import generate_daily_report
+from app.services.trade_cycle_service import run_trade_cycle
 from app.store.db import init_db, make_engine, make_session_factory
 from app.util.trading_day import et_trading_day
 
@@ -53,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     sent.add_argument("--days", type=int, default=7, help="回看新闻天数(默认 7)")
     sent.add_argument("--max-items", type=int, default=10, help="最多打分的新闻条数(默认 10)")
     sent.add_argument("--date", type=dt.date.fromisoformat, default=None, help="as_of 日期,缺省=今日(ET)")
+
+    tc = sub.add_parser("trade-cycle",
+                        help="screen → 四角色委员会(Gemini)→ 闸门下单 的每日交易循环")
+    tc.add_argument("--max-eval", type=int, default=None, help="最多评估的标的数(缺省=全部)")
+    tc.add_argument("--no-settle", action="store_true", help="跳过本轮撮合(只提交订单)")
 
     register_trading(sub)
     return parser
@@ -160,6 +167,53 @@ def cmd_sentiment(args, news_provider=None, gemini_client=None) -> int:
     return 0
 
 
+def cmd_trade_cycle(args, session=None, provider=None, news_provider=None,
+                    fundamentals_provider=None, gemini_client=None) -> int:
+    """screen → 委员会 → 闸门下单 的每日交易循环薄壳。业务全在 trade_cycle_service;
+    这里只装配 provider/session 与打印可读摘要。委员会只出建议——是否真的成交仍由
+    trade_cycle_service 内部经 submit_decision → RiskGate 决定,CLI 不做任何判断。"""
+    settings = get_settings()
+    provider = provider or _default_provider(settings)
+    news_provider = news_provider or build_news_provider(settings)
+    fundamentals_provider = (fundamentals_provider
+                             or EdgarFundamentalsProvider(settings.edgar_user_agent))
+    if gemini_client is None and settings.gemini_api_key:
+        gemini_client = GeminiClient()
+    elif gemini_client is None:
+        print("[warn] Gemini 未配置(STOCKAGENT_GEMINI_API_KEY 缺失):委员会将 fail-safe 为保守观望。")
+    own_session = session is None
+    if own_session:
+        engine = make_engine(settings.db_path)
+        init_db(engine)
+        session = make_session_factory(engine)()
+    try:
+        result = run_trade_cycle(
+            session, provider, news_provider, fundamentals_provider, gemini_client,
+            settle=not args.no_settle, max_eval=args.max_eval,
+        )
+    finally:
+        if own_session:
+            session.close()
+    print(f"# 交易循环 {result['as_of']}  mode={result['mode']}  "
+          f"评估 {result['evaluated']} 只标的")
+    for d in result["decisions"]:
+        shares = d["shares"] if d["shares"] is not None else "-"
+        note = d["submit_result"].get("note", "")
+        print(f"  {d['symbol']:<6} {d['action']:<4} conf={d['confidence']:.2f} "
+             f"shares={shares}  {note}")
+    if result["fills"]:
+        print(f"成交 {len(result['fills'])} 笔:")
+        for f in result["fills"]:
+            print(f"  {f['fill_date']} {f['side']} {f['symbol']} "
+                 f"x{f['shares']} @ {f['price']}")
+    if result["errors"]:
+        print(f"[warn] {len(result['errors'])} 个标的处理失败:")
+        for e in result["errors"]:
+            print(f"  {e['symbol']}: {e['error']}")
+    _warn_skipped(result["skipped"])
+    return 0
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "screen":
@@ -170,6 +224,8 @@ def main(argv=None) -> int:
         return cmd_report(args)
     if args.command == "sentiment":
         return cmd_sentiment(args)
+    if args.command == "trade-cycle":
+        return cmd_trade_cycle(args)
     return args.func(args)  # M3 子命令(orders/mode/watchdog)经 set_defaults 分发
 
 
