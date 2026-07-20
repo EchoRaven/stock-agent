@@ -4,8 +4,8 @@
  * `X-Stock-Agent-Token` or talks to the FastAPI backend directly. This route
  * handler reads the token file from disk (server-side, per request) and
  * forwards to `${BACKEND_URL}/api/<path>${search}`, adding the token header
- * on state-changing (POST) requests. No client component or bundle ever
- * imports this file's contents — it only runs on the server.
+ * on state-changing (POST, DELETE) requests. No client component or bundle
+ * ever imports this file's contents — it only runs on the server.
  */
 import { readFile } from "fs/promises";
 import path from "path";
@@ -36,7 +36,7 @@ async function forward(req: NextRequest, segments: string[]): Promise<NextRespon
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const init: RequestInit = { method: req.method, headers };
 
-  if (req.method === "POST") {
+  if (req.method === "POST" || req.method === "DELETE") {
     const token = await readToken();
     if (!token) {
       return NextResponse.json(
@@ -74,5 +74,9 @@ export async function GET(req: NextRequest, { params }: RouteContext): Promise<N
 }
 
 export async function POST(req: NextRequest, { params }: RouteContext): Promise<NextResponse> {
+  return forward(req, params.path);
+}
+
+export async function DELETE(req: NextRequest, { params }: RouteContext): Promise<NextResponse> {
   return forward(req, params.path);
 }

@@ -68,3 +68,11 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
   });
   return handleResponse<T>(res);
 }
+
+export async function apiDelete<T = unknown>(path: string): Promise<T> {
+  const res = await fetch(`/api/backend/${path}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  return handleResponse<T>(res);
+}
