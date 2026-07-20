@@ -12,11 +12,17 @@
 - 解锁密码只从 Settings(env/.env)读取,绝不硬编码,也绝不出现在日志或异常信息里。
 - process_fills 用券商(deal_list_query)上报的真实成交价/量对账,`open_prices`
   参数只是为了和 Broker 接口签名保持一致,这里不使用(纸面开盘价对真实成交无意义)。
+  对账按 order_id 精确匹配成交(submit 时把券商 order id 存进 order.reason),
+  不按 symbol 猜——同标的的另一笔人工/机器人订单不会被错误地对到本单上。
+  每笔对账成功的成交都会原样镜像进本地 cash/position 账本(与 PaperBroker._execute
+  同样的记账口径,但不做纸面截断)——position-cap / daily-loss 熔断读的就是这本账,
+  账本不同步风控就是瞎子。
 - 未经真实 OpenD 校验:本文件配套测试全部 mock SDK;上线前请按
   docs/futu_setup.md 用你自己的模拟盘账户实测。
 """
 import datetime as dt
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -24,8 +30,11 @@ from app.config import get_settings
 from app.execution.base import Broker
 from app.store.models import OrderRow
 from app.store.repos import order_repo, paper_repo
+from app.store.repos.settings_repo import get_app_settings
 
 logger = logging.getLogger(__name__)
+
+_REASON_ORDER_ID_RE = re.compile(r"^futu:[A-Za-z_]+:(.+)$")
 
 
 class FutuBroker(Broker):
@@ -86,7 +95,12 @@ class FutuBroker(Broker):
         ctx = futu_mod.OpenSecTradeContext(
             filter_trdmarket=futu_mod.TrdMarket.US, host=self._host, port=self._port)
         if self._trd_env_name == "REAL":
-            self._unlock(futu_mod, ctx)
+            try:
+                self._unlock(futu_mod, ctx)
+            except Exception:
+                # 解锁失败也不能漏关 ctx(socket 泄漏);异常本身已经不含密码,原样重抛。
+                self._close(ctx)
+                raise
         return ctx
 
     def _unlock(self, futu_mod, ctx) -> None:
@@ -148,30 +162,80 @@ class FutuBroker(Broker):
             return []
         return data
 
-    def _index_deals_by_code(self, deals) -> dict:
+    def _index_deals_by_order_id(self, deals) -> dict:
+        """券商 order_id -> 该单下的所有成交记录(同一单可能有多笔部分成交)。"""
         try:
             records = deals.to_dict("records")
         except AttributeError:
             records = list(deals or [])
         out: dict = {}
         for rec in records:
-            code = rec.get("code")
-            if code and code not in out:  # 同一 code 只取第一条,足够对账
-                out[code] = rec
+            order_id = rec.get("order_id")
+            if order_id is None:
+                continue
+            out.setdefault(str(order_id), []).append(rec)
         return out
 
+    def _parse_broker_order_id(self, order: OrderRow) -> str | None:
+        """从 submit 时写入的 reason(`futu:<ENV>:<broker_order_id>`)解析出券商 order id;
+        格式对不上一律返回 None——绝不用别的信息(比如 symbol)瞎猜。"""
+        match = _REASON_ORDER_ID_RE.match(order.reason or "")
+        if not match:
+            return None
+        broker_order_id = match.group(1)
+        return broker_order_id or None
+
+    def _apply_fill_to_ledger(self, session: Session, order: OrderRow, qty: int,
+                              price: float) -> None:
+        """把券商上报的真实成交镜像进本地 cash/position 账本——RiskGate(仓位上限/
+        日内熔断)读的就是 paper_repo 这本账。字段/更新方式与 PaperBroker._execute
+        完全一致,但不做纸面截断:成交已经在券商侧真实发生,原样应用 (side, qty, price)。
+        """
+        account = paper_repo.get_account(session, get_app_settings(session).initial_cash)
+        held = paper_repo.get_position(session, order.symbol)
+        held_shares = held.shares if held is not None else 0
+        if order.side == "buy":
+            account.cash -= qty * price
+            prev_cost = held.avg_cost * held_shares if held is not None else 0.0
+            total = held_shares + qty
+            paper_repo.set_position(session, order.symbol, total,
+                                    (prev_cost + qty * price) / total)
+        else:
+            account.cash += qty * price
+            paper_repo.set_position(session, order.symbol, held_shares - qty,
+                                    held.avg_cost if held is not None else 0.0)
+
+    def _reconcile_one(self, session: Session, fill_date: dt.date, order: OrderRow,
+                       by_order_id: dict):
+        broker_order_id = self._parse_broker_order_id(order)
+        if broker_order_id is None:
+            return None  # 没存下券商 order id:保持 submitted,不猜测
+        order_deals = by_order_id.get(broker_order_id)
+        if not order_deals:
+            return None  # 券商未报告这张单的成交:保持 submitted,不猜测
+        parsed = [(int(d["qty"]), float(d["price"])) for d in order_deals]
+        qty = sum(q for q, _ in parsed)
+        if qty <= 0:
+            return None
+        price = sum(q * p for q, p in parsed) / qty  # 多笔部分成交按量加权均价
+        self._apply_fill_to_ledger(session, order, qty, price)
+        order_repo.update_status(
+            session, order.id, order_repo.STATUS_FILLED,
+            reason=f"futu filled {qty}@{price:.4f} on {fill_date}")
+        return paper_repo.add_fill(
+            session, order.id, fill_date, order.symbol, order.side, qty, price)
+
     def _reconcile(self, session: Session, fill_date: dt.date, deals) -> list:
-        by_code = self._index_deals_by_code(deals)
+        by_order_id = self._index_deals_by_order_id(deals)
         fills = []
         for order in order_repo.get_orders_by_status(session, order_repo.STATUS_SUBMITTED):
-            deal = by_code.get(self._code(order.symbol))
-            if deal is None:
-                continue  # 券商未报告成交:保持 submitted,不猜测
-            qty = int(deal["qty"])
-            price = float(deal["price"])
-            order_repo.update_status(
-                session, order.id, order_repo.STATUS_FILLED,
-                reason=f"futu filled {qty}@{price:.4f} on {fill_date}")
-            fills.append(paper_repo.add_fill(
-                session, order.id, fill_date, order.symbol, order.side, qty, price))
+            try:
+                fill = self._reconcile_one(session, fill_date, order, by_order_id)
+            except Exception:
+                # 一笔畸形成交(缺字段/NaN)不能拖垮整批对账;不泄露成交明细,只记 order.id。
+                logger.warning("futu 对账失败,order_id=%s 保持 submitted,跳过", order.id,
+                               exc_info=True)
+                continue
+            if fill is not None:
+                fills.append(fill)
         return fills

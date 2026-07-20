@@ -19,10 +19,11 @@ from app.config import Settings
 from app.execution.base import Broker
 from app.execution.futu_broker import FutuBroker
 from app.store.db import init_db, make_engine, make_session_factory
+from app.store.models import OrderRow, PaperAccountRow
 from app.store.repos.order_repo import (STATUS_APPROVED, STATUS_CANCELLED,
                                         STATUS_FILLED, STATUS_SUBMITTED,
                                         create_order, get_order)
-from app.store.repos.paper_repo import get_fills
+from app.store.repos.paper_repo import get_account, get_fills, get_position, set_position
 
 D = dt.date(2026, 7, 17)
 D1 = dt.date(2026, 7, 20)
@@ -313,7 +314,7 @@ def test_place_order_rejected_marks_cancelled_not_raised(session, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_process_fills_reconciles_broker_deal_into_fill(session, monkeypatch):
-    deal_rows = [{"code": "US.AAPL", "qty": 10, "price": 151.23}]
+    deal_rows = [{"code": "US.AAPL", "qty": 10, "price": 151.23, "order_id": "ORD-1"}]
     fake_mod, created = make_fake_futu_module(deal_rows=deal_rows)
     monkeypatch.setitem(sys.modules, "futu", fake_mod)
 
@@ -352,3 +353,117 @@ def test_process_fills_guards_real_env_too(session, monkeypatch):
     with pytest.raises(RuntimeError):
         broker.process_fills(session, D1, {})
     assert created == []
+
+
+# ---------------------------------------------------------------------------
+# C1: reconciled fills must mirror into the local cash/position ledger
+# (RiskGate reads paper_repo.get_account/get_positions via build_account_state)
+# ---------------------------------------------------------------------------
+
+def test_reconciled_buy_updates_cash_and_position(session, monkeypatch):
+    session.add(PaperAccountRow(id=1, cash=10_000.0))
+    session.flush()
+
+    deal_rows = [{"code": "US.AAPL", "qty": 10, "price": 151.23, "order_id": "ORD-1"}]
+    fake_mod, created = make_fake_futu_module(deal_rows=deal_rows)
+    monkeypatch.setitem(sys.modules, "futu", fake_mod)
+
+    broker = FutuBroker(_settings())
+    row = _approved(session, symbol="AAPL", side="buy", shares=10)
+    broker.submit(session, row)  # FakeCtx.place_order always returns order_id "ORD-1"
+
+    fills = broker.process_fills(session, D1, {"AAPL": 999.0})
+
+    assert len(fills) == 1
+    account = get_account(session, 10_000.0)
+    assert account.cash == pytest.approx(10_000.0 - 10 * 151.23)
+    position = get_position(session, "AAPL")
+    assert position is not None
+    assert position.shares == 10
+    assert position.avg_cost == pytest.approx(151.23)
+
+
+def test_reconciled_sell_updates_cash_and_position(session, monkeypatch):
+    session.add(PaperAccountRow(id=1, cash=5_000.0))
+    session.flush()
+    set_position(session, "AAPL", 20, 100.0)
+
+    deal_rows = [{"code": "US.AAPL", "qty": 10, "price": 160.0, "order_id": "ORD-1"}]
+    fake_mod, created = make_fake_futu_module(deal_rows=deal_rows)
+    monkeypatch.setitem(sys.modules, "futu", fake_mod)
+
+    broker = FutuBroker(_settings())
+    row = _approved(session, symbol="AAPL", side="sell", shares=10)
+    broker.submit(session, row)
+
+    fills = broker.process_fills(session, D1, {"AAPL": 999.0})
+
+    assert len(fills) == 1
+    account = get_account(session, 5_000.0)
+    assert account.cash == pytest.approx(5_000.0 + 10 * 160.0)
+    position = get_position(session, "AAPL")
+    assert position is not None
+    assert position.shares == 10
+    assert position.avg_cost == pytest.approx(100.0)  # unchanged on sell
+
+
+# ---------------------------------------------------------------------------
+# I1: match deals to the specific order by broker order_id, not symbol
+# ---------------------------------------------------------------------------
+
+def test_deal_matched_by_order_id_not_symbol(session, monkeypatch):
+    order_a = OrderRow(as_of=D, symbol="AAPL", side="buy", shares=5,
+                       status=STATUS_SUBMITTED, mode="full_auto",
+                       reason="futu:SIMULATE:ORD-A")
+    order_b = OrderRow(as_of=D, symbol="AAPL", side="buy", shares=7,
+                       status=STATUS_SUBMITTED, mode="full_auto",
+                       reason="futu:SIMULATE:ORD-B")
+    session.add_all([order_a, order_b])
+    session.flush()
+
+    # Only a deal for ORD-A is reported; same symbol, no deal at all for ORD-B.
+    deal_rows = [{"code": "US.AAPL", "qty": 5, "price": 150.0, "order_id": "ORD-A"}]
+    fake_mod, created = make_fake_futu_module(deal_rows=deal_rows)
+    monkeypatch.setitem(sys.modules, "futu", fake_mod)
+
+    broker = FutuBroker(_settings())
+    fills = broker.process_fills(session, D1, {})
+
+    assert len(fills) == 1
+    assert fills[0].order_id == order_a.id
+    assert fills[0].shares == 5
+    assert fills[0].price == pytest.approx(150.0)
+    assert get_order(session, order_a.id).status == STATUS_FILLED
+    assert get_order(session, order_b.id).status == STATUS_SUBMITTED  # not force-filled
+
+
+# ---------------------------------------------------------------------------
+# M2: one malformed deal must not abort the whole reconciliation batch
+# ---------------------------------------------------------------------------
+
+def test_malformed_deal_does_not_abort_batch(session, monkeypatch):
+    order_a = OrderRow(as_of=D, symbol="AAPL", side="buy", shares=5,
+                       status=STATUS_SUBMITTED, mode="full_auto",
+                       reason="futu:SIMULATE:ORD-A")
+    order_b = OrderRow(as_of=D, symbol="MSFT", side="buy", shares=3,
+                       status=STATUS_SUBMITTED, mode="full_auto",
+                       reason="futu:SIMULATE:ORD-B")
+    session.add_all([order_a, order_b])
+    session.flush()
+
+    # ORD-A's deal is missing "qty" -> becomes NaN once packed into a DataFrame
+    # alongside ORD-B's well-formed row -> int(nan) raises inside reconciliation.
+    deal_rows = [
+        {"code": "US.AAPL", "price": 150.0, "order_id": "ORD-A"},
+        {"code": "US.MSFT", "qty": 3, "price": 50.0, "order_id": "ORD-B"},
+    ]
+    fake_mod, created = make_fake_futu_module(deal_rows=deal_rows)
+    monkeypatch.setitem(sys.modules, "futu", fake_mod)
+
+    broker = FutuBroker(_settings())
+    fills = broker.process_fills(session, D1, {})  # must not raise
+
+    assert len(fills) == 1
+    assert fills[0].order_id == order_b.id
+    assert get_order(session, order_a.id).status == STATUS_SUBMITTED  # left alone
+    assert get_order(session, order_b.id).status == STATUS_FILLED
