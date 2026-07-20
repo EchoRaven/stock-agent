@@ -150,6 +150,10 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
   const [reviews, setReviews] = useState<MemoryEntry[] | null>(null);
   const [reviewsError, setReviewsError] = useState<string | null>(null);
 
+  const [watchBusy, setWatchBusy] = useState(false);
+  const [watched, setWatched] = useState(false);
+  const [watchError, setWatchError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -158,6 +162,8 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
     setDetail(null);
     setAnalysis(null);
     setAnalyzeError(null);
+    setWatched(false);
+    setWatchError(null);
     apiGet<StockDetail>(`stock/${symbol}?days=365`)
       .then((res) => {
         if (!cancelled) setDetail(res);
@@ -229,6 +235,20 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
     }
   }
 
+  async function onAddWatch() {
+    setWatchBusy(true);
+    setWatchError(null);
+    try {
+      await apiPost("watchlist", { symbol });
+      setWatched(true);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) setWatchError("缺少令牌");
+      else setWatchError(errMessage(err, "加入自选失败"));
+    } finally {
+      setWatchBusy(false);
+    }
+  }
+
   if (!symbol) return <ErrorBanner message="缺少股票代码" />;
   if (loading) return <p className="text-sm text-slate-500">Loading…</p>;
   if (notFound) return <ErrorBanner message={`查无此代码或无价格数据: ${symbol}`} />;
@@ -252,6 +272,14 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
           <span className={`text-sm font-medium tabular-nums ${changeColor(summary.chg_1d)}`}>
             {fmtPct(summary.pct_1d)} 今日
           </span>
+          <button
+            onClick={onAddWatch}
+            disabled={watchBusy || watched}
+            className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            {watched ? "已加入自选 ✓" : watchBusy ? "加入中…" : "+ 加入自选"}
+          </button>
+          {watchError && <span className="text-xs text-red-600">{watchError}</span>}
         </div>
         <p className="text-xs text-slate-400">as of {detail.as_of}</p>
       </div>

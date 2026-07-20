@@ -316,6 +316,17 @@ export interface PicksResponse {
   gemini_calls: number;
 }
 
+export interface WatchlistItem {
+  symbol: string;
+  note: string | null;
+  added_at: string;
+  current_price: number | null;
+  prev_close: number | null;
+  change: number | null;
+  /** Percentage-point value, e.g. 1.5 == +1.5%. */
+  change_pct: number | null;
+}
+
 export interface StockAnalysis {
   symbol: string;
   as_of: string;

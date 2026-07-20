@@ -109,6 +109,16 @@ class PicksRequest(BaseModel):
     n: int = Field(default=8, ge=1, le=15)
 
 
+class WatchlistCreate(BaseModel):
+    """POST /api/watchlist 请求体。symbol 的非空/长度校验放在路由层做(需要先
+    strip 才能判断"纯空白"是否非法),这里不用 Field(min_length=...)以免同一条
+    规则分散两处。"""
+
+    model_config = ConfigDict(extra="forbid")
+    symbol: str
+    note: str | None = None
+
+
 class SentimentRequest(BaseModel):
     """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
     dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,

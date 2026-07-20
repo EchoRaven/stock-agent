@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/signals", label: "Signals" },
   { href: "/picks", label: "Picks" },
+  { href: "/watchlist", label: "Watchlist" },
   { href: "/execution", label: "Execution" },
   { href: "/orders", label: "Orders" },
   { href: "/backtest", label: "Backtest" },
