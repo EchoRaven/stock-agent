@@ -6,10 +6,13 @@ export function StatCard({
   label,
   value,
   accent,
+  valueClassName,
 }: {
   label: string;
   value: string;
   accent?: boolean;
+  /** Override the value's text color, e.g. for signed P&L (green/red). */
+  valueClassName?: string;
 }) {
   return (
     <div
@@ -18,7 +21,11 @@ export function StatCard({
       }`}
     >
       <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{value}</div>
+      <div
+        className={`mt-1 text-lg font-semibold tabular-nums ${valueClassName ?? "text-slate-900"}`}
+      >
+        {value}
+      </div>
     </div>
   );
 }
