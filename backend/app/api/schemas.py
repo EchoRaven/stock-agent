@@ -45,3 +45,30 @@ class BacktestRequest(BaseModel):
     cash: float = 100_000
     max_positions: int = 5
     universe: list[str] | None = None
+
+
+class ExecutionBackendUpdate(BaseModel):
+    """安全红线:合法值只有 settings_repo.EXECUTION_BACKENDS(paper/futu_paper)——
+    故意不在这里写 Literal 枚举(避免两处真相),校验全权委托 set_execution_backend,
+    任何其它值(含 "real"/"futu_real")在那里被 ValueError 拒绝→routes_execution.py 转 400。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    backend: str
+
+
+class SignalsRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    universe: list[str] | None = None
+    top_n: int | None = Field(default=None, ge=1, le=500)
+
+
+class SentimentRequest(BaseModel):
+    """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
+    dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,
+    上限还兼作费用/配额刹车。"""
+
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(min_length=1)
+    days: int = Field(default=7, ge=1, le=90)
+    max_items: int = Field(default=10, ge=1, le=50)

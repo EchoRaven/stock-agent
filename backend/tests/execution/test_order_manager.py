@@ -2,15 +2,20 @@ import datetime as dt
 
 import pytest
 
-from app.execution.order_manager import (approve_order, handle_decision, list_pending,
-                                         order_to_dict, reject_order, settle_open)
+from app.execution import order_manager
+from app.execution.base import Broker
+from app.execution.futu_broker import FutuBroker
+from app.execution.order_manager import (_get_broker, approve_order, handle_decision,
+                                         list_pending, order_to_dict, reject_order,
+                                         settle_open)
+from app.execution.paper import PaperBroker
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import save_decision
 from app.store.repos.order_repo import (STATUS_FILLED, STATUS_PENDING_CONFIRMATION,
                                         STATUS_REJECTED, STATUS_SUBMITTED, get_order)
 from app.store.repos.paper_repo import get_account, get_positions
 from app.store.repos.settings_repo import (MODE_FULL_AUTO, MODE_SEMI_AUTO,
-                                           update_risk_params)
+                                           set_execution_backend, update_risk_params)
 
 D = dt.date(2026, 7, 17)
 D1 = dt.date(2026, 7, 20)
@@ -39,6 +44,17 @@ def test_semi_auto_queues_pending(session):
 def test_full_auto_within_caps_submits(session):
     out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES, as_of=D)
     assert out["order"]["status"] == STATUS_SUBMITTED
+
+
+def test_full_auto_note_reflects_actual_execution_backend(session, monkeypatch):
+    # note 必须反映 settings 里记录的真实后端,而不是硬编码 "paper"——否则切到
+    # futu_paper 后,UI/日志会误导性地显示 "submitted to paper broker"。
+    # 用 PaperBroker 打桩 _get_broker,避免真的实例化/连接 FutuBroker
+    # (未装 futu-api / 无 OpenD)——这里只验证文案,不验证 FutuBroker 本身。
+    set_execution_backend(session, "futu_paper")
+    monkeypatch.setattr(order_manager, "_get_broker", lambda s: PaperBroker())
+    out = handle_decision(session, _decision(session), MODE_FULL_AUTO, 10, PRICES, as_of=D)
+    assert out["note"] == "submitted to futu_paper broker"
 
 
 def test_full_auto_over_cap_rejected_not_submitted(session):
@@ -116,3 +132,31 @@ def test_approve_nonpending_is_refused(session):
     assert result["order"]["status"] == STATUS_SUBMITTED  # 原样返回,不重复提交
     assert "not pending" in result["note"]
     assert order_to_dict(get_order(session, out["order"]["id"]))["status"] == STATUS_SUBMITTED
+
+
+# ---------------------------------------------------------------------------
+# broker factory (security-critical): _get_broker only ever returns a broker
+# for settings_repo.EXECUTION_BACKENDS ("paper"/"futu_paper") — no real-money
+# branch reachable from here.
+# ---------------------------------------------------------------------------
+
+
+def test_get_broker_defaults_to_paper_broker(session):
+    broker = _get_broker(session)
+    assert isinstance(broker, Broker)
+    assert isinstance(broker, PaperBroker)
+
+
+def test_get_broker_returns_futu_broker_for_futu_paper(session):
+    set_execution_backend(session, "futu_paper")
+    broker = _get_broker(session)
+    assert isinstance(broker, FutuBroker)
+
+
+def test_order_manager_imports_without_futu_installed():
+    """futu-api 不是核心依赖(见 pyproject.toml [project.optional-dependencies].live),
+    不装时本模块以及整个 FastAPI app 必须仍可 import——_get_broker 里对
+    FutuBroker 的 import 是惰性的(只在真调用 futu_paper 分支时才发生),
+    模块级 import 从不触碰它。"""
+    import app.execution.order_manager  # noqa: F401
+    import app.main  # noqa: F401

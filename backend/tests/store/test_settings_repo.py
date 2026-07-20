@@ -5,9 +5,11 @@ from sqlalchemy import select
 
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.models import SettingsRow
-from app.store.repos.settings_repo import (MODE_ADVISORY, MODE_FULL_AUTO,
-                                           MODE_SEMI_AUTO, MODES, get_app_settings,
-                                           get_mode, set_mode, update_risk_params)
+from app.store.repos.settings_repo import (EXECUTION_BACKENDS, MODE_ADVISORY,
+                                           MODE_FULL_AUTO, MODE_SEMI_AUTO, MODES,
+                                           get_app_settings, get_execution_backend,
+                                           get_mode, set_execution_backend, set_mode,
+                                           update_risk_params)
 
 
 @pytest.fixture
@@ -75,6 +77,29 @@ def test_full_auto_requires_explicit_confirm(session):
     assert get_mode(session) == MODE_ADVISORY
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
     assert get_mode(session) == MODE_FULL_AUTO
+
+
+def test_execution_backends_constant_has_no_real_option():
+    # 红线:UI 可切换的执行后端只有这两个纸面/模拟盘值,没有任何真实资金选项。
+    assert EXECUTION_BACKENDS == ("paper", "futu_paper")
+
+
+def test_fresh_db_execution_backend_is_paper(session):
+    assert get_execution_backend(session) == "paper"
+
+
+def test_set_execution_backend_switches_to_futu_paper(session):
+    row = set_execution_backend(session, "futu_paper")
+    assert row.execution_backend == "futu_paper"
+    assert get_execution_backend(session) == "futu_paper"
+
+
+def test_set_execution_backend_rejects_real_money_values(session):
+    for bogus in ("futu_real", "real", "REAL", "anything", ""):
+        with pytest.raises(ValueError):
+            set_execution_backend(session, bogus)
+    # 拒绝之后没有半吊子写入——仍是默认值
+    assert get_execution_backend(session) == "paper"
 
 
 def test_update_risk_params_whitelist(session):

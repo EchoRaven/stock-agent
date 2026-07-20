@@ -14,17 +14,35 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.execution.account_state import build_account_state
+from app.execution.base import Broker
 from app.execution.paper import PaperBroker
 from app.risk.gate import RiskGate, params_from_row
 from app.risk.rules import OrderRequest
 from app.store.models import DecisionRow, OrderRow
 from app.store.repos import order_repo
-from app.store.repos.settings_repo import MODE_FULL_AUTO, MODE_SEMI_AUTO, get_app_settings
+from app.store.repos.settings_repo import (MODE_FULL_AUTO, MODE_SEMI_AUTO, get_app_settings,
+                                           get_execution_backend)
 
 logger = logging.getLogger(__name__)
 
 _gate = RiskGate()
-_broker = PaperBroker()
+
+
+def _get_broker(session: Session) -> Broker:
+    """执行后端工厂:按 settings.execution_backend 挑 broker 实例。
+
+    安全红线:唯一可达分支是 get_execution_backend() 的返回值,而它只可能是
+    settings_repo.EXECUTION_BACKENDS 里的 "paper"/"futu_paper"(set_execution_backend
+    拒绝其余一切值)——这里没有、也永远不会有能触达真实资金的分支。REAL 交易
+    完全在 FutuBroker 内部靠 env-only 的 futu_allow_real + futu_unlock_pwd 硬门控,
+    与这个开关无关。FutuBroker 惰性 import,保证未装 futu-api 时本模块仍可正常
+    import(见 tests/execution/test_order_manager.py 的 import 守卫)。
+    """
+    backend = get_execution_backend(session)
+    if backend == "futu_paper":
+        from app.execution.futu_broker import FutuBroker
+        return FutuBroker()
+    return PaperBroker()
 
 
 def order_to_dict(row: OrderRow) -> dict:
@@ -70,8 +88,9 @@ def handle_decision(session: Session, decision: DecisionRow, mode: str,
     row = order_repo.create_order(session, as_of, symbol, side, shares,
                                   order_repo.STATUS_APPROVED, mode,
                                   decision_id=decision.id)
-    row = _broker.submit(session, row)
-    return {"order": order_to_dict(row), "note": "submitted to paper broker"}
+    row = _get_broker(session).submit(session, row)
+    return {"order": order_to_dict(row),
+            "note": f"submitted to {get_execution_backend(session)} broker"}
 
 
 def list_pending(session: Session) -> list:
@@ -91,7 +110,7 @@ def approve_order(session: Session, order_id: int, as_of: dt.date, prices: dict)
                                        reason=f"rejected at approval: {check.reason}")
         return {"order": order_to_dict(row), "note": "rejected by risk gate at approval"}
     row = order_repo.update_status(session, order_id, order_repo.STATUS_APPROVED)
-    row = _broker.submit(session, row)
+    row = _get_broker(session).submit(session, row)
     return {"order": order_to_dict(row), "note": "approved and submitted"}
 
 
@@ -111,5 +130,5 @@ def settle_open(session: Session, fill_date: dt.date, open_prices: dict) -> list
         {"order_id": f.order_id, "symbol": f.symbol, "side": f.side,
          "shares": f.shares, "price": round(f.price, 4),
          "fill_date": f.fill_date.isoformat()}
-        for f in _broker.process_fills(session, fill_date, open_prices)
+        for f in _get_broker(session).process_fills(session, fill_date, open_prices)
     ]

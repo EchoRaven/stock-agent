@@ -62,6 +62,7 @@ class SettingsRow(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)  # 恒为 1
     mode: Mapped[str] = mapped_column(String(16), default="advisory")
+    execution_backend: Mapped[str] = mapped_column(String(16), default="paper")
     single_position_cap_pct: Mapped[float] = mapped_column(Float, default=0.20)
     total_position_cap_pct: Mapped[float] = mapped_column(Float, default=0.80)
     max_new_positions_per_day: Mapped[int] = mapped_column(Integer, default=3)

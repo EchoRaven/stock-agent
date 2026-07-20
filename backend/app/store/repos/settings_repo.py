@@ -20,6 +20,12 @@ RISK_PARAM_FIELDS = ("single_position_cap_pct", "total_position_cap_pct",
                      "max_new_positions_per_day", "daily_loss_halt_pct",
                      "cooldown_days", "initial_cash")
 
+# 安全红线:UI 可切换的执行后端只有这两个值——都是纸面/模拟盘。这里没有、也永远
+# 不会有任何指向真实资金的选项;REAL 交易只能靠 FutuBroker 内部 env-only 的
+# futu_allow_real + futu_unlock_pwd 硬门控(见 app/execution/futu_broker.py),
+# 完全不经过这张表/这个设置。
+EXECUTION_BACKENDS = ("paper", "futu_paper")
+
 
 def get_app_settings(session: Session) -> SettingsRow:
     """取(或建)单例行 id=1,字段用模型默认值。"""
@@ -48,6 +54,23 @@ def set_mode(session: Session, mode: str, *, confirm_full_auto: bool = False) ->
         raise ValueError("enabling full_auto requires confirm_full_auto=True (explicit opt-in)")
     row = get_app_settings(session)
     row.mode = mode
+    session.flush()
+    return row
+
+
+def get_execution_backend(session: Session) -> str:
+    """当前执行后端;未设置/空 → 'paper'(fail-safe,默认行为不变)。"""
+    return get_app_settings(session).execution_backend or "paper"
+
+
+def set_execution_backend(session: Session, backend: str) -> SettingsRow:
+    """切换执行后端。安全红线:合法值只有 EXECUTION_BACKENDS(paper/futu_paper),
+    其余一律 ValueError——真实资金选项在这里不存在,不是"被拒绝",而是压根没有
+    这个分支可选。"""
+    if backend not in EXECUTION_BACKENDS:
+        raise ValueError(f"execution_backend must be one of {EXECUTION_BACKENDS}")
+    row = get_app_settings(session)
+    row.execution_backend = backend
     session.flush()
     return row
 

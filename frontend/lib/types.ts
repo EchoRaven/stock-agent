@@ -63,3 +63,55 @@ export interface BacktestResponse {
   equity_curve: { date: string; equity: number }[];
   skipped: { symbol: string; reason: string }[];
 }
+
+export type ExecutionBackend = "paper" | "futu_paper";
+
+export interface ExecutionResponse {
+  backend: ExecutionBackend;
+  available_backends: ExecutionBackend[];
+  futu: {
+    host: string;
+    port: number;
+    trd_env: string;
+    allow_real: boolean;
+    opend_reachable: boolean;
+  };
+}
+
+export interface SentimentHeadline {
+  date: string;
+  source: string;
+  headline: string;
+}
+
+export interface SentimentResponse {
+  symbol: string;
+  as_of: string;
+  days: number;
+  news_count: number;
+  sentiment: number | null;
+  scored: boolean;
+  headlines: SentimentHeadline[];
+}
+
+export interface FillResponse {
+  order_id: number;
+  symbol: string;
+  side: string;
+  shares: number;
+  price: number;
+  fill_date: string;
+}
+
+export interface SettleResponse {
+  fills: FillResponse[];
+  count: number;
+}
+
+export interface WatchdogResponse {
+  healthy: boolean;
+  mode_before: Mode;
+  mode_after: Mode;
+  downgraded: boolean;
+  reasons: string[];
+}
