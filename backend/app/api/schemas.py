@@ -76,6 +76,21 @@ class TradeCycleRequest(BaseModel):
     settle: bool = True
 
 
+class MemoryCreate(BaseModel):
+    """POST /api/memory 请求体——人工新增知识条目(source 服务端强制为 "manual",
+    这里不接受该字段)。kind 是否在允许集合(见 memory_repo.KINDS)由仓储层
+    校验(ValueError → 路由转 400),不在这里用 Literal 枚举(避免两处真相)。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    kind: str
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)
+    symbol: str | None = None
+    status: str = "active"
+    weight: float = 1.0
+
+
 class SentimentRequest(BaseModel):
     """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
     dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,

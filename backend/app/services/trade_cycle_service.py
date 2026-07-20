@@ -25,6 +25,7 @@ from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
 from app.services.decision_service import TRADE_ACTIONS, submit_decision
 from app.services.market_data_service import fetch_bars, latest_closes_for, open_prices_for
+from app.services.memory_service import get_committee_context
 from app.services.analysis_service import run_screen_on_bars
 from app.store.repos.order_repo import STATUS_SUBMITTED, get_orders_by_status
 from app.store.repos.paper_repo import get_account, get_positions
@@ -112,7 +113,11 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             held = symbol in positions
             briefing = get_stock_briefing(symbol, price_provider, news_provider,
                                           fundamentals_provider, as_of)
-            committee = run_committee(gemini_client, briefing, held=held)
+            # ADVISORY CONTEXT ONLY:我们自己积累的知识 + 该票历史决策,只喂进委员会
+            # prompt 作参考,不改变闸门/下单路径(见 app/services/memory_service.py)。
+            memory_context = get_committee_context(session, symbol)
+            committee = run_committee(gemini_client, briefing, held=held,
+                                      memory_context=memory_context)
             if gemini_client is not None:
                 gemini_calls += 1
             action, shares = _size_shares(

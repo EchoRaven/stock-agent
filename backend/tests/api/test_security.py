@@ -144,3 +144,34 @@ def test_run_signals_with_correct_token_succeeds(unsecured_client, token_env):
     assert resp.status_code == 200
     symbols = {s["symbol"] for s in resp.json()}
     assert symbols == {"AAPL", "MSFT"}
+
+
+def test_post_memory_without_token_is_forbidden(unsecured_client):
+    resp = unsecured_client.post("/api/memory", json={"kind": "insight", "title": "t", "body": "b"})
+    assert resp.status_code == 403
+    assert unsecured_client.get("/api/memory").json() == []  # 无副作用:没有被悄悄写入
+
+
+def test_post_memory_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/memory",
+                                 json={"kind": "insight", "title": "t", "body": "b"},
+                                 headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+
+
+def test_post_memory_seed_without_token_is_forbidden(unsecured_client):
+    resp = unsecured_client.post("/api/memory/seed")
+    assert resp.status_code == 403
+    assert unsecured_client.get("/api/memory").json() == []  # 无副作用:没有被悄悄播种
+
+
+def test_post_memory_seed_with_correct_token_succeeds(unsecured_client, token_env):
+    token = current_token()
+    resp = unsecured_client.post("/api/memory/seed", headers={"X-Stock-Agent-Token": token})
+    assert resp.status_code == 200
+    assert resp.json()["inserted"] == 6
+
+
+def test_get_memory_does_not_require_token(unsecured_client):
+    assert unsecured_client.get("/api/memory").status_code == 200

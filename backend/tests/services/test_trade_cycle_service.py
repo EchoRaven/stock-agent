@@ -328,6 +328,42 @@ def test_total_cap_binds_cumulatively_within_cycle(session):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# memory_context: ADVISORY CONTEXT ONLY——run_trade_cycle 在调用 run_committee
+# 前算出 get_committee_context(session, symbol) 并原样传入;full_auto 一轮照常
+# 跑完、下单闸门不受影响,委员会拿到的 prompt 里能看到种子知识文本。
+# ---------------------------------------------------------------------------
+
+
+class CapturingGemini(FakeGemini):
+    """在原有按标的分派逻辑之上额外记录每次收到的 prompt 原文。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.prompts = []
+
+    def generate_json(self, prompt):
+        self.prompts.append(prompt)
+        return super().generate_json(prompt)
+
+
+def test_full_auto_cycle_passes_memory_context_to_committee_prompt(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = FakeProvider({"AAPL": 100.0})
+    gemini = CapturingGemini(by_symbol={"AAPL": _committee_json("buy", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["AAPL"], max_eval=1)
+
+    assert gemini.calls == 1
+    assert len(gemini.prompts) == 1
+    # 种子知识里的一条真实结论短语,证明 memory_context 确实被拼进了委员会 prompt
+    assert "元结论" in gemini.prompts[0]
+    assert "【已积累的知识/教训(内部,仅供参考)】" in gemini.prompts[0]
+    assert result["decisions"][0]["action"] == "buy"  # 闸门/下单路径不受影响
+    assert result["decisions"][0]["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+
+
 def test_settle_false_leaves_orders_submitted_no_positions(session):
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
     provider = FakeProvider({"AAPL": 100.0})

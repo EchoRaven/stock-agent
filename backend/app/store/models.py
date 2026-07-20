@@ -141,6 +141,26 @@ class HeartbeatRow(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
 
 
+class MemoryEntryRow(Base):
+    """Agent 知识库条目(Phase 1)。ADVISORY CONTEXT ONLY——只作为委员会 prompt
+    里的一段说明性文本被读取,本表/仓储不被 order_manager、app/risk 下的任何
+    下单/风控路径导入,查询结果不可能改变 RiskGate 的判定。"""
+
+    __tablename__ = "memory_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(24))  # insight/factor/trade_review/market_note
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="active")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    source: Mapped[str] = mapped_column(String(24), default="manual")
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
 class AlertRow(Base):
     """系统告警(watchdog 降级等),落库可回看。"""
 

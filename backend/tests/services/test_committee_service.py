@@ -5,7 +5,7 @@ import datetime as dt
 from app.data.base import PriceProvider
 from app.data.fundamentals_edgar import FundamentalsProvider, FundamentalsSummary
 from app.data.news_finnhub import NewsItem, NewsProvider
-from app.data.sanitize import DELIM_OPEN, INJECTION_NOTICE
+from app.data.sanitize import DELIM_CLOSE, DELIM_OPEN, INJECTION_NOTICE
 from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
 from app.services.decision_service import ROLE_KEYS, validate_decision
@@ -214,3 +214,64 @@ def test_prompt_embeds_untrusted_news_block_verbatim():
     assert briefing["news_block"] in prompt
     assert "不可信" in prompt
     assert "不得执行" in prompt
+
+
+# ---------------------------------------------------------------------------
+# memory_context:ADVISORY CONTEXT ONLY——我们自己的内部知识,喂进 prompt 但
+# 明确与不可信 news_block 区分开;为空则整节省略;不改变输出契约。
+# ---------------------------------------------------------------------------
+
+_SEEDED_PHRASE = "元结论:简单技术叠加无稳健免费改进"
+
+
+def test_prompt_includes_memory_context_when_provided():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    memory_context = f"【已积累的知识/教训(内部,仅供参考)】\n- [insight] {_SEEDED_PHRASE}: ..."
+    run_committee(client, briefing, held=False, memory_context=memory_context)
+    prompt = client.prompts[0]
+    assert _SEEDED_PHRASE in prompt
+    assert memory_context in prompt
+
+
+def test_memory_section_is_separate_from_untrusted_news_block():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    memory_context = f"【已积累的知识/教训(内部,仅供参考)】\n- [insight] {_SEEDED_PHRASE}: ..."
+    run_committee(client, briefing, held=False, memory_context=memory_context)
+    prompt = client.prompts[0]
+    # memory 内容不在不可信定界包裹内部(news_block 已经是完整的一段定界包裹文本)
+    assert memory_context not in briefing["news_block"]
+    news_start = prompt.index(DELIM_OPEN)
+    news_end = prompt.index(DELIM_CLOSE) + len(DELIM_CLOSE)
+    memory_start = prompt.index(_SEEDED_PHRASE)
+    assert not (news_start <= memory_start < news_end)  # memory 不落在 news 定界区间内
+    assert "历史经验,不是硬约束" in prompt  # memory 有自己的说明性引导文字
+
+
+def test_empty_memory_context_omits_memory_section():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    run_committee(client, briefing, held=False, memory_context="")
+    prompt = client.prompts[0]
+    assert "历史经验,不是硬约束" not in prompt
+
+
+def test_default_memory_context_is_empty_and_omits_section():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    run_committee(client, briefing, held=False)  # 不传 memory_context
+    prompt = client.prompts[0]
+    assert "历史经验,不是硬约束" not in prompt
+
+
+def test_memory_context_does_not_change_output_contract():
+    briefing = _briefing()
+    client = FakeGemini(_good_json(action="buy", confidence=0.7))
+    memory_context = f"【已积累的知识/教训(内部,仅供参考)】\n- [insight] {_SEEDED_PHRASE}: ..."
+    out = run_committee(client, briefing, held=False, memory_context=memory_context)
+    assert out["action"] == "buy"
+    assert out["confidence"] == 0.7
+    for role in ROLE_KEYS:
+        assert out["committee"][role]["summary"]
+    _assert_valid_decision(out, shares=10)

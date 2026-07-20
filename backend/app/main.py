@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_backtest import router as backtest_router
 from app.api.routes_dashboard import router as dashboard_router
 from app.api.routes_execution import router as execution_router
+from app.api.routes_memory import router as memory_router
 from app.api.routes_orders import router as orders_router
 from app.api.routes_sentiment import router as sentiment_router
 from app.api.routes_settings import router as settings_router
@@ -38,6 +39,7 @@ app.include_router(execution_router, prefix="/api")
 app.include_router(sentiment_router, prefix="/api")
 app.include_router(watchdog_router, prefix="/api")
 app.include_router(trade_router, prefix="/api")
+app.include_router(memory_router, prefix="/api")
 
 
 @app.get("/api/health")
