@@ -3,7 +3,13 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import { ApiError, apiGet, apiPost } from "@/lib/api";
-import type { MemoryEntry, MemoryKind, MemorySeedResponse, MemoryStatus } from "@/lib/types";
+import type {
+  FactorMineResponse,
+  MemoryEntry,
+  MemoryKind,
+  MemorySeedResponse,
+  MemoryStatus,
+} from "@/lib/types";
 import { ErrorBanner, Field } from "@/components/ui";
 
 const KIND_OPTIONS: { value: MemoryKind; label: string }[] = [
@@ -27,6 +33,13 @@ const STATUS_STYLES: Record<MemoryStatus, string> = {
   data_blocked: "border border-amber-300 bg-amber-50 text-amber-800",
   proposed: "border border-indigo-300 bg-indigo-50 text-indigo-800",
   active: "border border-slate-300 bg-slate-100 text-slate-700",
+};
+
+const MINE_VERDICT_STYLES: Record<string, string> = {
+  validated: "text-emerald-700",
+  no_improvement: "text-amber-700",
+  refuted: "text-slate-500",
+  error: "text-red-600",
 };
 
 function parseEvidence(raw: string | null): Record<string, unknown> | null {
@@ -66,6 +79,10 @@ export default function MemoryPage() {
   const [seedBusy, setSeedBusy] = useState(false);
   const [seedError, setSeedError] = useState<string | null>(null);
   const [seedNotice, setSeedNotice] = useState<string | null>(null);
+
+  const [mineBusy, setMineBusy] = useState(false);
+  const [mineError, setMineError] = useState<string | null>(null);
+  const [mineResult, setMineResult] = useState<FactorMineResponse | null>(null);
 
   const [kindFilter, setKindFilter] = useState<MemoryKind | "">("");
   const [statusFilter, setStatusFilter] = useState<MemoryStatus | "">("");
@@ -112,6 +129,33 @@ export default function MemoryPage() {
       );
     } finally {
       setSeedBusy(false);
+    }
+  }
+
+  async function onMine() {
+    if (
+      !window.confirm(
+        "让 AI 提出候选因子并自动两窗口回测?只有稳健改善的才会标为 validated(多数会被证伪)。较慢。"
+      )
+    )
+      return;
+    setMineBusy(true);
+    setMineError(null);
+    setMineResult(null);
+    try {
+      const res = await apiPost<FactorMineResponse>("factors/mine", { n: 3 });
+      setMineResult(res);
+      await load();
+    } catch (err) {
+      setMineError(
+        err instanceof ApiError
+          ? err.status === 403
+            ? "缺少令牌 — 检查后端 .api_token"
+            : ApiError.detailToMessage(err.detail)
+          : "因子挖掘失败"
+      );
+    } finally {
+      setMineBusy(false);
     }
   }
 
@@ -232,7 +276,44 @@ export default function MemoryPage() {
         >
           {showForm ? "收起" : "+ 添加知识"}
         </button>
+        <button
+          onClick={onMine}
+          disabled={mineBusy}
+          className="rounded-md border border-indigo-300 bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+        >
+          {mineBusy ? "挖掘中…" : "挖掘一轮因子"}
+        </button>
       </div>
+
+      {mineBusy && (
+        <p className="text-sm text-slate-500">
+          因子挖掘中…提案 + 两窗口回测,可能要一两分钟。
+        </p>
+      )}
+      {mineError && <ErrorBanner message={mineError} />}
+      {mineResult && (
+        <div className="rounded-md border border-slate-200 bg-white p-4">
+          <p className="mb-2 text-sm font-medium text-slate-700">
+            本轮挖掘完成,共 {mineResult.count} 条提案(结果已并入下方知识库):
+          </p>
+          <ul className="space-y-1 text-sm">
+            {mineResult.results.map((r, i) => (
+              <li key={i} className="flex flex-wrap items-baseline gap-x-2">
+                <span className="font-mono text-slate-800">
+                  {r.factor}({JSON.stringify(r.params)})
+                </span>
+                <span className="text-slate-400">→</span>
+                <span className={`font-semibold ${MINE_VERDICT_STYLES[r.verdict] ?? "text-slate-600"}`}>
+                  {r.verdict}
+                </span>
+                {r.verdict === "error" && r.error && (
+                  <span className="text-xs text-red-500">{r.error}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {showForm && (
         <form

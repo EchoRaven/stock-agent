@@ -91,6 +91,15 @@ class MemoryCreate(BaseModel):
     weight: float = 1.0
 
 
+class MineFactorsRequest(BaseModel):
+    """POST /api/factors/mine 请求体——n 是本轮提案数量上限,必须有界(每条
+    提案都要跑两窗口回测,过大直接放大 CPU/耗时,同 SentimentRequest 的
+    days/max_items 上限思路)。"""
+
+    model_config = ConfigDict(extra="forbid")
+    n: int = Field(default=3, ge=1, le=5)
+
+
 class SentimentRequest(BaseModel):
     """安全红线:days/max_items 必须有界——未加界的 days(如 999999999)会让
     dt.timedelta 溢出触发未处理 500,且该端点触发付费 Gemini/新闻调用,
