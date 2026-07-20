@@ -297,6 +297,25 @@ export interface DecisionHistoryItem {
 
 export type CommitteeRoleKey = "technical" | "fundamental" | "sentiment" | "bear";
 
+export interface Pick {
+  rank: number;
+  symbol: string;
+  quant_score: number;
+  action: "buy" | "sell" | "hold";
+  confidence: number;
+  chair_verdict: string;
+  held: boolean;
+}
+
+export interface PicksResponse {
+  as_of: string;
+  n: number;
+  picks: Pick[];
+  errors: { symbol: string; error: string }[];
+  skipped: unknown[];
+  gemini_calls: number;
+}
+
 export interface StockAnalysis {
   symbol: string;
   as_of: string;

@@ -10,6 +10,7 @@ import type { SettingsResponse } from "@/lib/types";
 const LINKS = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/signals", label: "Signals" },
+  { href: "/picks", label: "Picks" },
   { href: "/execution", label: "Execution" },
   { href: "/orders", label: "Orders" },
   { href: "/backtest", label: "Backtest" },
