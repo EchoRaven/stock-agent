@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet, apiPost } from "@/lib/api";
 import type { SignalResponse } from "@/lib/types";
 import { ErrorBanner, Th } from "@/components/ui";
+import { SentimentWidget } from "@/components/SentimentWidget";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -15,6 +16,9 @@ export default function SignalsPage() {
   const [signals, setSignals] = useState<SignalResponse[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const [runBusy, setRunBusy] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,11 +39,27 @@ export default function SignalsPage() {
     };
   }, [date]);
 
+  async function onRunScreen() {
+    setRunBusy(true);
+    setRunError(null);
+    try {
+      const res = await apiPost<SignalResponse[]>("signals/run", {});
+      setSignals(res);
+      setDate(today());
+    } catch (err) {
+      setRunError(
+        err instanceof ApiError ? ApiError.detailToMessage(err.detail) : "运行筛选失败"
+      );
+    } finally {
+      setRunBusy(false);
+    }
+  }
+
   const partKeys = Array.from(new Set((signals ?? []).flatMap((s) => Object.keys(s.parts))));
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <label className="text-sm font-medium text-slate-700" htmlFor="signal-date">
           Date
         </label>
@@ -50,7 +70,18 @@ export default function SignalsPage() {
           onChange={(e) => setDate(e.target.value)}
           className="input"
         />
+        <button
+          onClick={onRunScreen}
+          disabled={runBusy}
+          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+        >
+          {runBusy ? "运行中…" : "现在跑一次"}
+        </button>
+        {runBusy && (
+          <span className="text-sm text-slate-500">正在联网拉取行情并筛选,可能需要一些时间…</span>
+        )}
       </div>
+      {runError && <p className="text-sm text-red-600">{runError}</p>}
 
       {error && <ErrorBanner message={error} />}
       {loading && <p className="text-sm text-slate-500">Loading…</p>}
@@ -91,6 +122,8 @@ export default function SignalsPage() {
           </table>
         </div>
       )}
+
+      <SentimentWidget />
     </div>
   );
 }
