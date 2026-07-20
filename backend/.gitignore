@@ -8,3 +8,4 @@ reports/
 *.egg-info/
 *.db
 .env
+.api_token
