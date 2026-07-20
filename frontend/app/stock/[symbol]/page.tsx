@@ -3,8 +3,15 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, apiGet, apiPost } from "@/lib/api";
-import type { CommitteeRoleKey, FundamentalPoint, StockAnalysis, StockDetail } from "@/lib/types";
-import { ErrorBanner, StatCard } from "@/components/ui";
+import type {
+  CommitteeRoleKey,
+  DecisionHistoryItem,
+  FundamentalPoint,
+  MemoryEntry,
+  StockAnalysis,
+  StockDetail,
+} from "@/lib/types";
+import { ErrorBanner, StatCard, Th } from "@/components/ui";
 import { PriceChart } from "@/components/PriceChart";
 
 function fmtNum(x: number | null | undefined, digits = 2): string {
@@ -45,6 +52,49 @@ const ROLE_LABELS: Record<CommitteeRoleKey, string> = {
 };
 
 const ROLE_ORDER: CommitteeRoleKey[] = ["technical", "fundamental", "sentiment", "bear"];
+
+/** Plain-text action coloring for the compact history table (mirrors
+ * app/history/page.tsx's decisions table, distinct from the ACTION_STYLES
+ * pill used above for the current AI-committee recommendation). */
+const ACTION_TEXT_COLORS: Record<string, string> = {
+  buy: "text-emerald-700",
+  sell: "text-red-700",
+  hold: "text-slate-500",
+};
+
+const CHAIR_VERDICT_SNIPPET_LEN = 100;
+const REVIEW_SNIPPET_LEN = 140;
+
+interface TradeReviewEvidence {
+  realized_pnl?: number;
+  realized_pnl_pct?: number;
+  holding_days?: number;
+}
+
+/** evidence_json is a freeform JSON string written by the reflection service —
+ * parse defensively, never throw on missing/malformed data. */
+function parseEvidence(raw: string | null): TradeReviewEvidence {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as TradeReviewEvidence;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function truncate(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+function errMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) return ApiError.detailToMessage(err.detail);
+  return err instanceof Error ? err.message : fallback;
+}
 
 function FundamentalTable({
   title,
@@ -95,6 +145,11 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
   const [analyzeBusy, setAnalyzeBusy] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
 
+  const [decisions, setDecisions] = useState<DecisionHistoryItem[] | null>(null);
+  const [decisionsError, setDecisionsError] = useState<string | null>(null);
+  const [reviews, setReviews] = useState<MemoryEntry[] | null>(null);
+  const [reviewsError, setReviewsError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -118,6 +173,38 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [symbol]);
+
+  // Separate effect for this symbol's agent history (prior committee decisions
+  // + closed-trade post-mortems) — reuses existing read-only endpoints. Kept
+  // isolated from the primary stock-detail effect above so a failure here
+  // (e.g. backend hiccup) can never break the rest of the page.
+  useEffect(() => {
+    let cancelled = false;
+    setDecisions(null);
+    setDecisionsError(null);
+    setReviews(null);
+    setReviewsError(null);
+
+    apiGet<DecisionHistoryItem[]>(`decisions?symbol=${symbol}&limit=20`)
+      .then((res) => {
+        if (!cancelled) setDecisions(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setDecisionsError(errMessage(err, "历史决策加载失败"));
+      });
+
+    apiGet<MemoryEntry[]>(`memory?symbol=${symbol}&kind=trade_review`)
+      .then((res) => {
+        if (!cancelled) setReviews(res);
+      })
+      .catch((err) => {
+        if (!cancelled) setReviewsError(errMessage(err, "平仓复盘加载失败"));
+      });
+
     return () => {
       cancelled = true;
     };
@@ -288,6 +375,108 @@ export default function StockDetailPage({ params }: { params: { symbol: string }
             </p>
           </div>
         )}
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-sm font-semibold text-slate-700">该股 agent 历史</h2>
+
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            历史决策
+          </h3>
+          {decisionsError && <ErrorBanner message={decisionsError} />}
+          {decisions && decisions.length === 0 && !decisionsError && (
+            <p className="text-sm text-slate-500">暂无历史决策</p>
+          )}
+          {decisions && decisions.length > 0 && (
+            <div className="overflow-x-auto rounded-md border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <Th>As of</Th>
+                    <Th>Action</Th>
+                    <Th align="right">置信度</Th>
+                    <Th>Mode</Th>
+                    <Th>主席裁决</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {decisions.map((d) => (
+                    <tr key={d.id}>
+                      <td className="whitespace-nowrap px-3 py-2 text-slate-500">{d.as_of}</td>
+                      <td
+                        className={`px-3 py-2 font-medium ${
+                          ACTION_TEXT_COLORS[d.action] ?? "text-slate-500"
+                        }`}
+                      >
+                        {d.action}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {(d.confidence * 100).toFixed(0)}%
+                      </td>
+                      <td className="px-3 py-2 text-slate-500">{d.mode}</td>
+                      <td
+                        className="max-w-md truncate px-3 py-2 text-slate-600"
+                        title={d.chair_verdict}
+                      >
+                        {truncate(d.chair_verdict || "", CHAIR_VERDICT_SNIPPET_LEN) || "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            平仓复盘
+          </h3>
+          {reviewsError && <ErrorBanner message={reviewsError} />}
+          {reviews && reviews.length === 0 && !reviewsError && (
+            <p className="text-sm text-slate-500">暂无平仓复盘</p>
+          )}
+          {reviews && reviews.length > 0 && (
+            <div className="overflow-x-auto rounded-md border border-slate-200">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <Th align="right">盈亏 %</Th>
+                    <Th align="right">持有天数</Th>
+                    <Th>复盘</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {reviews.map((entry) => {
+                    const evidence = parseEvidence(entry.evidence_json);
+                    const snippet =
+                      truncate(entry.title || "", REVIEW_SNIPPET_LEN) ||
+                      truncate(entry.body || "", REVIEW_SNIPPET_LEN);
+                    const full = [entry.title, entry.body].filter(Boolean).join("\n\n");
+                    return (
+                      <tr key={entry.id}>
+                        <td
+                          className={`px-3 py-2 text-right tabular-nums ${changeColor(
+                            evidence.realized_pnl_pct
+                          )}`}
+                        >
+                          {fmtPct(evidence.realized_pnl_pct)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {evidence.holding_days ?? "—"}
+                        </td>
+                        <td className="max-w-md truncate px-3 py-2 text-slate-600" title={full}>
+                          {snippet || "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );
