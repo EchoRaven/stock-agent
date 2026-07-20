@@ -22,6 +22,7 @@ from app.services.analysis_service import run_screen_on_bars
 from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
 from app.services.market_data_service import fetch_bars
+from app.services.market_regime_service import get_regime, regime_context_line
 from app.services.memory_service import get_committee_context
 from app.store.repos.paper_repo import get_positions
 from app.util.trading_day import et_trading_day
@@ -67,6 +68,16 @@ def generate_picks(
 
     positions = get_positions(session)
 
+    # ADVISORY CONTEXT ONLY(同 memory_context 款红线):大盘 regime(SPY vs 200
+    # 日均线)只算这一次,给本轮所有候选复用——不是每个候选各抓一次 SPY。取价
+    # 失败/规则计算异常都不能中断整轮生成,兜底降级为空字符串。
+    try:
+        regime = get_regime(price_provider, as_of)
+        market_context = regime_context_line(regime)
+    except Exception:
+        logger.warning("picks: market regime computation failed", exc_info=True)
+        market_context = ""
+
     picks: list[dict] = []
     errors: list[dict] = []
     gemini_calls = 0
@@ -79,7 +90,8 @@ def generate_picks(
             memory_context = get_committee_context(session, sym)
             held = sym in positions
             committee = run_committee(gemini_client, briefing, held=held,
-                                      memory_context=memory_context)
+                                      memory_context=memory_context,
+                                      market_context=market_context)
         except Exception as exc:
             logger.warning("picks: candidate %s failed, skipping", sym, exc_info=True)
             errors.append({"symbol": sym, "error": str(exc) or type(exc).__name__})

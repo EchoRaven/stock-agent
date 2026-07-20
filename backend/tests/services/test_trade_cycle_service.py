@@ -12,6 +12,7 @@ in-memory SQLite)。
 """
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -51,6 +52,31 @@ class PreMarketProvider(FakeProvider):
 
     def get_daily_bars(self, symbol, start, end):
         return super().get_daily_bars(symbol, start, end - dt.timedelta(days=1))
+
+
+class SpyFakeProvider(FakeProvider):
+    """在 FakeProvider 之上额外给 SPY 一条单调上升行情,让
+    market_regime_service.get_regime 算出 available=True/risk_on=True——用于
+    证明 regime 确实被算出并喂进委员会 prompt(而不是像其余用例那样因为
+    fake provider 压根没有 SPY 数据而始终 available=False)。额外记录 SPY 被
+    抓取的次数,用来证明"整轮循环只算一次 regime",不是每只标的各抓一次 SPY。
+    """
+
+    def __init__(self, prices: dict):
+        super().__init__(prices)
+        self.spy_fetch_calls = 0
+
+    def get_daily_bars(self, symbol, start, end):
+        if symbol != "SPY":
+            return super().get_daily_bars(symbol, start, end)
+        self.spy_fetch_calls += 1
+        if start > end:
+            return empty_bars()
+        idx = pd.date_range(start, end, freq="D")
+        closes = 300.0 + 0.5 * np.arange(len(idx))
+        return pd.DataFrame(
+            {"open": closes, "high": closes, "low": closes, "close": closes,
+             "volume": 1_000_000.0}, index=idx)
 
 
 class RaisingNewsProvider(NewsProvider):
@@ -403,6 +429,43 @@ def test_full_auto_cycle_passes_memory_context_to_committee_prompt(session):
     assert "【已积累的知识/教训(内部,仅供参考)】" in gemini.prompts[0]
     assert result["decisions"][0]["action"] == "buy"  # 闸门/下单路径不受影响
     assert result["decisions"][0]["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+
+
+# ---------------------------------------------------------------------------
+# market_context (macro regime): ADVISORY CONTEXT ONLY——run_trade_cycle 在
+# per-symbol 循环之外算一次 get_regime/regime_context_line(SpyFakeProvider 断言
+# SPY 只被抓一次,不是每只标的各抓一次),把结果原样传给每次 run_committee;
+# full_auto 一轮照常跑完、下单闸门不受影响。
+# ---------------------------------------------------------------------------
+
+
+def test_full_auto_cycle_passes_market_context_to_committee_prompt(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = SpyFakeProvider({"AAPL": 100.0})
+    gemini = CapturingGemini(by_symbol={"AAPL": _committee_json("buy", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["AAPL"], max_eval=1)
+
+    assert gemini.calls == 1
+    assert len(gemini.prompts) == 1
+    # 大盘处于 risk-on(SpyFakeProvider 构造的是单调上升行情)
+    assert "宏观背景" in gemini.prompts[0]
+    assert "risk-on" in gemini.prompts[0]
+    assert result["decisions"][0]["action"] == "buy"  # 闸门/下单路径不受影响
+    assert result["decisions"][0]["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+
+
+def test_market_regime_fetched_once_per_cycle_not_per_symbol(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = SpyFakeProvider({"AAPL": 100.0, "MSFT": 90.0})
+    gemini = FakeGemini(default=_committee_json("hold", 0.5))
+
+    run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                    now_utc=NOW_UTC, universe=["AAPL", "MSFT"], max_eval=None)
+
+    # (b) regime 只算一次并复用给本轮所有标的,不是每只标的各抓一次 SPY。
+    assert provider.spy_fetch_calls == 1
 
 
 def test_settle_false_leaves_orders_submitted_no_positions(session):
