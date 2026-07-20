@@ -7,6 +7,7 @@ import { ApiError, apiGet, apiPost } from "@/lib/api";
 import { money } from "@/lib/format";
 import type {
   DashboardResponse,
+  MarketRegime,
   MarksResponse,
   SettleResponse,
   TradeCycleResponse,
@@ -70,6 +71,13 @@ export default function DashboardPage() {
   const [marksError, setMarksError] = useState<string | null>(null);
   const [marksLoading, setMarksLoading] = useState(true);
 
+  // Secondary load: market-context banner (SPY vs 200-day SMA, no-LLM,
+  // context only). Independent state + its own try/catch so a regime-fetch
+  // failure never blocks the primary dashboard render.
+  const [regime, setRegime] = useState<MarketRegime | null>(null);
+  const [regimeError, setRegimeError] = useState<string | null>(null);
+  const [regimeLoading, setRegimeLoading] = useState(true);
+
   const load = useCallback(async () => {
     try {
       const res = await apiGet<DashboardResponse>("dashboard");
@@ -94,6 +102,18 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadRegime = useCallback(async () => {
+    try {
+      const res = await apiGet<MarketRegime>("market/regime");
+      setRegime(res);
+      setRegimeError(null);
+    } catch (err) {
+      setRegimeError(err instanceof Error ? err.message : "大盘状态加载失败");
+    } finally {
+      setRegimeLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
     const id = setInterval(load, POLL_MS);
@@ -105,6 +125,12 @@ export default function DashboardPage() {
     const id = setInterval(loadMarks, POLL_MS);
     return () => clearInterval(id);
   }, [loadMarks]);
+
+  useEffect(() => {
+    loadRegime();
+    const id = setInterval(loadRegime, POLL_MS);
+    return () => clearInterval(id);
+  }, [loadRegime]);
 
   const maintenanceBusy = settleBusy || watchdogBusy;
 
@@ -185,6 +211,27 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {regime && regime.available && (
+        <div
+          className={
+            "rounded-md border px-4 py-2 text-sm " +
+            (regime.risk_on
+              ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+              : "border-amber-300 bg-amber-50 text-amber-800")
+          }
+        >
+          <p className="font-medium">
+            {regime.risk_on
+              ? `📈 大盘 risk-on — SPY ${money(regime.spy_close)} 在 200 日均线 ${money(regime.spy_sma200)} 上方 (${signedPctPoints(regime.distance_pct, 2)})`
+              : `⚠️ 大盘 risk-off — SPY ${money(regime.spy_close)} 跌破 200 日均线 ${money(regime.spy_sma200)} (${signedPctPoints(regime.distance_pct, 2)})`}
+          </p>
+          <p className="mt-0.5 text-xs text-slate-500">仅市场背景参考,不驱动下单</p>
+        </div>
+      )}
+      {regimeLoading && !regime && !regimeError && (
+        <p className="text-xs text-slate-400">大盘状态加载中…</p>
+      )}
+
       {error && <ErrorBanner message={error} />}
 
       {data.circuit_breaker_tripped && (
