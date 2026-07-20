@@ -139,3 +139,24 @@ export interface WatchdogResponse {
   downgraded: boolean;
   reasons: string[];
 }
+
+export type MemoryKind = "insight" | "factor" | "trade_review" | "market_note";
+export type MemoryStatus = "validated" | "refuted" | "data_blocked" | "proposed" | "active";
+
+export interface MemoryEntry {
+  id: number;
+  kind: MemoryKind;
+  title: string;
+  body: string;
+  symbol: string | null;
+  status: MemoryStatus;
+  evidence_json: string | null;
+  source: string | null;
+  weight: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemorySeedResponse {
+  inserted: number;
+}
