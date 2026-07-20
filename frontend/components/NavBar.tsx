@@ -13,6 +13,7 @@ const LINKS = [
   { href: "/execution", label: "Execution" },
   { href: "/orders", label: "Orders" },
   { href: "/backtest", label: "Backtest" },
+  { href: "/history", label: "History" },
   { href: "/memory", label: "Memory" },
   { href: "/settings", label: "Settings" },
 ];

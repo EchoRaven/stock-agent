@@ -215,6 +215,39 @@ export interface StockDetail {
   fundamentals: StockFundamentals;
 }
 
+export interface CumulativePoint {
+  date: string;
+  cum_pnl: number;
+}
+
+export interface PerformanceResponse {
+  closed_trades: number;
+  realized_pnl_total: number;
+  win_rate: number | null;
+  wins: number;
+  losses: number;
+  avg_win: number | null;
+  avg_loss: number | null;
+  avg_holding_days: number | null;
+  cumulative_pnl_series: CumulativePoint[];
+  cash: number;
+  open_positions: number;
+  open_positions_cost_value: number;
+  equity_at_cost: number;
+  initial_cash: number;
+}
+
+export interface DecisionHistoryItem {
+  id: number;
+  as_of: string;
+  symbol: string;
+  action: string;
+  confidence: number;
+  mode: string;
+  chair_verdict: string;
+  created_at: string;
+}
+
 export type CommitteeRoleKey = "technical" | "fundamental" | "sentiment" | "bear";
 
 export interface StockAnalysis {
