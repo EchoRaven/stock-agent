@@ -18,3 +18,13 @@ def save_decision(session: Session, as_of: dt.date, symbol: str, action: str,
 def get_decisions(session: Session, as_of: dt.date) -> list:
     stmt = select(DecisionRow).where(DecisionRow.as_of == as_of).order_by(DecisionRow.id)
     return list(session.scalars(stmt))
+
+
+def get_recent_decisions(session: Session, symbol: str | None = None,
+                         limit: int = 50) -> list[DecisionRow]:
+    """决策历史浏览用:按 symbol 可选过滤,created_at desc(同刻按 id desc 兜底)排序,limit 截断。"""
+    stmt = select(DecisionRow)
+    if symbol is not None:
+        stmt = stmt.where(DecisionRow.symbol == symbol)
+    stmt = stmt.order_by(DecisionRow.created_at.desc(), DecisionRow.id.desc()).limit(limit)
+    return list(session.scalars(stmt))
