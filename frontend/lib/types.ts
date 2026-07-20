@@ -13,6 +13,30 @@ export interface DashboardResponse {
   pending_orders_count: number;
 }
 
+export interface MarkPosition {
+  symbol: string;
+  shares: number;
+  avg_cost: number;
+  cost_basis: number;
+  current_price: number | null;
+  market_value: number | null;
+  unrealized: number | null;
+  unrealized_pct: number | null;
+}
+
+export interface MarksResponse {
+  as_of: string;
+  positions: MarkPosition[];
+  priced: number;
+  unpriced: string[];
+  total_cost: number;
+  total_market_value: number;
+  total_unrealized: number;
+  total_unrealized_pct: number | null;
+  cash: number;
+  equity: number;
+}
+
 export interface TradeDecision {
   symbol: string;
   action: string;

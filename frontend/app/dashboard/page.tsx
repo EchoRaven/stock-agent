@@ -7,6 +7,7 @@ import { ApiError, apiGet, apiPost } from "@/lib/api";
 import { money } from "@/lib/format";
 import type {
   DashboardResponse,
+  MarksResponse,
   SettleResponse,
   TradeCycleResponse,
   WatchdogResponse,
@@ -21,6 +22,27 @@ function tokenAwareMessage(err: unknown, fallback: string): string {
     return ApiError.detailToMessage(err.detail);
   }
   return err instanceof Error ? err.message : fallback;
+}
+
+/** unrealized_pct / total_unrealized_pct are already percentage-point units
+ * (mirrors pct_1d in app/stock/[symbol]/page.tsx and realized_pnl_pct in
+ * app/history/page.tsx) — do NOT run through lib/format's signedPct, which
+ * multiplies by 100 again. */
+function signedPctPoints(x: number | null | undefined, digits = 1): string {
+  if (x === null || x === undefined || Number.isNaN(x)) return "—";
+  const sign = x > 0 ? "+" : "";
+  return `${sign}${x.toFixed(digits)}%`;
+}
+
+function signedMoney(x: number | null | undefined): string {
+  if (x === null || x === undefined || Number.isNaN(x)) return "—";
+  const sign = x > 0 ? "+" : "";
+  return `${sign}${money(x)}`;
+}
+
+function pnlColor(x: number | null | undefined): string {
+  if (x === null || x === undefined || Number.isNaN(x)) return "text-slate-400";
+  return x >= 0 ? "text-emerald-700" : "text-red-700";
 }
 
 export default function DashboardPage() {
@@ -40,6 +62,14 @@ export default function DashboardPage() {
   const [cycleError, setCycleError] = useState<string | null>(null);
   const [cycleResult, setCycleResult] = useState<TradeCycleResponse | null>(null);
 
+  // Secondary load: live mark-to-market unrealized P&L. Independent state +
+  // its own try/catch so a marks failure (or slow price provider) never
+  // breaks the primary dashboard render above, which already shows
+  // positions at cost.
+  const [marks, setMarks] = useState<MarksResponse | null>(null);
+  const [marksError, setMarksError] = useState<string | null>(null);
+  const [marksLoading, setMarksLoading] = useState(true);
+
   const load = useCallback(async () => {
     try {
       const res = await apiGet<DashboardResponse>("dashboard");
@@ -52,11 +82,29 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const loadMarks = useCallback(async () => {
+    try {
+      const res = await apiGet<MarksResponse>("positions/marks");
+      setMarks(res);
+      setMarksError(null);
+    } catch (err) {
+      setMarksError(err instanceof Error ? err.message : "行情加载失败");
+    } finally {
+      setMarksLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
     const id = setInterval(load, POLL_MS);
     return () => clearInterval(id);
   }, [load]);
+
+  useEffect(() => {
+    loadMarks();
+    const id = setInterval(loadMarks, POLL_MS);
+    return () => clearInterval(id);
+  }, [loadMarks]);
 
   const maintenanceBusy = settleBusy || watchdogBusy;
 
@@ -125,6 +173,15 @@ export default function DashboardPage() {
   if (!data) return null;
 
   const positions = Object.entries(data.positions);
+  const marksBySymbol = new Map((marks?.positions ?? []).map((p) => [p.symbol, p]));
+
+  const unrealizedValue =
+    marksLoading && !marks
+      ? "…"
+      : marks
+        ? `${signedMoney(marks.total_unrealized)} (${signedPctPoints(marks.total_unrealized_pct)})`
+        : "—";
+  const unrealizedClassName = marks ? pnlColor(marks.total_unrealized) : "text-slate-400";
 
   return (
     <div className="space-y-6">
@@ -140,6 +197,11 @@ export default function DashboardPage() {
         <StatCard label="Mode" value={data.mode} />
         <StatCard label="Equity" value={money(data.equity)} />
         <StatCard label="Cash" value={money(data.cash)} />
+        <StatCard
+          label="未实现盈亏"
+          value={unrealizedValue}
+          valueClassName={unrealizedClassName}
+        />
         <Link href="/orders" className="block">
           <StatCard
             label="Pending orders"
@@ -162,29 +224,70 @@ export default function DashboardPage() {
                   <Th align="right">Shares</Th>
                   <Th align="right">Avg cost</Th>
                   <Th align="right">Value</Th>
+                  <Th align="right">Current</Th>
+                  <Th align="right">Mkt value</Th>
+                  <Th align="right">Unrealized</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {positions.map(([symbol, p]) => (
-                  <tr key={symbol}>
-                    <td className="px-3 py-2 font-medium">
-                      <Link
-                        href={`/stock/${symbol}`}
-                        className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
+                {positions.map(([symbol, p]) => {
+                  const mark = marksBySymbol.get(symbol);
+                  const isUnpriced = mark ? mark.current_price === null : false;
+                  const stillLoading = marksLoading && !marks;
+                  return (
+                    <tr key={symbol}>
+                      <td className="px-3 py-2 font-medium">
+                        <Link
+                          href={`/stock/${symbol}`}
+                          className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
+                        >
+                          {symbol}
+                        </Link>
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{p.shares}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{money(p.avg_cost)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {money(p.shares * p.avg_cost)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {stillLoading
+                          ? "…"
+                          : mark && !isUnpriced
+                            ? money(mark.current_price)
+                            : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {stillLoading
+                          ? "…"
+                          : mark && !isUnpriced
+                            ? money(mark.market_value)
+                            : "—"}
+                      </td>
+                      <td
+                        className={`px-3 py-2 text-right tabular-nums ${
+                          mark && !isUnpriced ? pnlColor(mark.unrealized) : "text-slate-400"
+                        }`}
                       >
-                        {symbol}
-                      </Link>
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">{p.shares}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{money(p.avg_cost)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {money(p.shares * p.avg_cost)}
-                    </td>
-                  </tr>
-                ))}
+                        {stillLoading
+                          ? "…"
+                          : mark && !isUnpriced
+                            ? `${signedMoney(mark.unrealized)} (${signedPctPoints(mark.unrealized_pct)})`
+                            : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+        )}
+        {marks && marks.unpriced.length > 0 && (
+          <p className="mt-2 text-xs text-slate-400">
+            {marks.unpriced.length} 个标的暂无报价(未计入未实现)
+          </p>
+        )}
+        {marksError && !marks && (
+          <p className="mt-2 text-xs text-slate-400">行情加载失败</p>
         )}
       </section>
 
