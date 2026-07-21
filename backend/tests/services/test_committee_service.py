@@ -275,3 +275,81 @@ def test_memory_context_does_not_change_output_contract():
     for role in ROLE_KEYS:
         assert out["committee"][role]["summary"]
     _assert_valid_decision(out, shares=10)
+
+
+# ---------------------------------------------------------------------------
+# market_context:ADVISORY CONTEXT ONLY——大盘 regime(SPY vs 200 日均线,见
+# app/services/market_regime_service.py)只喂进委员会 prompt 作参考,与
+# memory_context(内部知识)、news_block(不可信外部材料)三者在文字上互不
+# 混淆;为空则整节省略;不改变输出契约。
+# ---------------------------------------------------------------------------
+
+_MARKET_PHRASE = "risk-on:SPY(450.12) 在 200 日均线(430.5)上方"
+
+
+def test_prompt_includes_market_context_when_provided():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    market_context = f"当前大盘处于 {_MARKET_PHRASE} (+4.5%),系统性风险偏低。"
+    run_committee(client, briefing, held=False, market_context=market_context)
+    prompt = client.prompts[0]
+    assert _MARKET_PHRASE in prompt
+    assert market_context in prompt
+    assert "【宏观背景" in prompt
+
+
+def test_market_context_section_is_separate_from_untrusted_news_block():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    market_context = f"当前大盘处于 {_MARKET_PHRASE} (+4.5%),系统性风险偏低。"
+    run_committee(client, briefing, held=False, market_context=market_context)
+    prompt = client.prompts[0]
+    # market_context 内容不在不可信定界包裹内部(news_block 已经是完整的一段
+    # 定界包裹文本)
+    assert market_context not in briefing["news_block"]
+    news_start = prompt.index(DELIM_OPEN)
+    news_end = prompt.index(DELIM_CLOSE) + len(DELIM_CLOSE)
+    market_start = prompt.index(_MARKET_PHRASE)
+    assert not (news_start <= market_start < news_end)  # 不落在 news 定界区间内
+
+
+def test_market_context_section_is_separate_from_memory_section():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    memory_context = f"【已积累的知识/教训(内部,仅供参考)】\n- [insight] {_SEEDED_PHRASE}: ..."
+    market_context = f"当前大盘处于 {_MARKET_PHRASE} (+4.5%),系统性风险偏低。"
+    run_committee(client, briefing, held=False, memory_context=memory_context,
+                  market_context=market_context)
+    prompt = client.prompts[0]
+    assert _SEEDED_PHRASE in prompt
+    assert _MARKET_PHRASE in prompt
+    assert "历史经验,不是硬约束" in prompt  # memory 的说明文字
+    assert "【宏观背景" in prompt  # market 的说明文字(不同标签,不与 memory 混淆)
+
+
+def test_empty_market_context_omits_macro_section():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    run_committee(client, briefing, held=False, market_context="")
+    prompt = client.prompts[0]
+    assert "【宏观背景" not in prompt
+
+
+def test_default_market_context_is_empty_and_omits_section():
+    briefing = _briefing()
+    client = FakeGemini(_good_json())
+    run_committee(client, briefing, held=False)  # 不传 market_context
+    prompt = client.prompts[0]
+    assert "【宏观背景" not in prompt
+
+
+def test_market_context_does_not_change_output_contract():
+    briefing = _briefing()
+    client = FakeGemini(_good_json(action="buy", confidence=0.7))
+    market_context = f"当前大盘处于 {_MARKET_PHRASE} (+4.5%),系统性风险偏低。"
+    out = run_committee(client, briefing, held=False, market_context=market_context)
+    assert out["action"] == "buy"
+    assert out["confidence"] == 0.7
+    for role in ROLE_KEYS:
+        assert out["committee"][role]["summary"]
+    _assert_valid_decision(out, shares=10)

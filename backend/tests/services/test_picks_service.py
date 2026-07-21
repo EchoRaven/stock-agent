@@ -11,6 +11,7 @@ tests/services/test_trade_cycle_service.py / tests/api/test_stock.py analyze
 """
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import select
@@ -50,6 +51,32 @@ class FakePicksProvider(PriceProvider):
              "volume": 1_000_000.0},
             index=idx,
         )
+
+
+class SpyFakePicksProvider(FakePicksProvider):
+    """在 FakePicksProvider 之上额外给 SPY 一条单调上升行情,让
+    market_regime_service.get_regime 算出 available=True/risk_on=True——用于
+    证明 regime 确实被算出并喂进委员会 prompt(其余用例的白名单里没有 SPY,
+    始终 available=False,这正好是"SPY 不可用时优雅降级"的隐性回归覆盖)。
+    额外记录 SPY 被抓取的次数,用来证明"每轮只算一次 regime",不是每个候选
+    各抓一次 SPY。
+    """
+
+    def __init__(self, symbols=CANDIDATES_3):
+        super().__init__(symbols)
+        self.spy_fetch_calls = 0
+
+    def get_daily_bars(self, symbol, start, end):
+        if symbol != "SPY":
+            return super().get_daily_bars(symbol, start, end)
+        self.spy_fetch_calls += 1
+        if start > end:
+            return empty_bars()
+        idx = pd.date_range(start, end, freq="D")
+        closes = 300.0 + 0.5 * np.arange(len(idx))
+        return pd.DataFrame(
+            {"open": closes, "high": closes, "low": closes, "close": closes,
+             "volume": 1_000_000.0}, index=idx)
 
 
 class FakePicksNews(NewsProvider):
@@ -101,6 +128,18 @@ class FakePicksGemini:
             if f'"{sym}"' in prompt:
                 return payload
         return self._default
+
+
+class CapturingPicksGemini(FakePicksGemini):
+    """在原有按标的分派逻辑之上额外记录每次收到的 prompt 原文。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.prompts = []
+
+    def generate_json(self, prompt):
+        self.prompts.append(prompt)
+        return super().generate_json(prompt)
 
 
 @pytest.fixture
@@ -202,3 +241,40 @@ def test_generate_picks_ranking_buy_then_hold_then_sell_by_confidence(session):
     assert [p["symbol"] for p in out["picks"]] == ["MSFT", "AAPL", "GOOGL", "NVDA", "AMZN"]
     assert [p["action"] for p in out["picks"]] == ["buy", "buy", "hold", "hold", "sell"]
     assert [p["rank"] for p in out["picks"]] == [1, 2, 3, 4, 5]
+
+
+# ---------------------------------------------------------------------------
+# market_context (macro regime): ADVISORY CONTEXT ONLY——generate_picks 在
+# per-candidate 循环之外算一次 get_regime/regime_context_line
+# (SpyFakePicksProvider 断言 SPY 只被抓一次,不是每个候选各抓一次),把结果原样
+# 传给每次 run_committee;分析only 的行为(排序/无落库)不受影响。
+# ---------------------------------------------------------------------------
+
+
+def test_generate_picks_passes_market_context_to_committee_prompt(session):
+    provider = SpyFakePicksProvider(CANDIDATES_3)
+    gemini = CapturingPicksGemini({"AAPL": _committee_json("buy", 0.9)})
+
+    out = generate_picks(session, provider, FakePicksNews(), FakePicksFunds(), gemini,
+                         now_utc=NOW_UTC, n=3)
+
+    assert out["errors"] == []
+    assert len(out["picks"]) == 3
+    assert gemini.calls == 3
+    assert len(gemini.prompts) == 3
+    for prompt in gemini.prompts:
+        # 大盘处于 risk-on(SpyFakePicksProvider 构造的是单调上升行情)
+        assert "宏观背景" in prompt
+        assert "risk-on" in prompt
+
+
+def test_generate_picks_regime_fetched_once_not_per_candidate(session):
+    provider = SpyFakePicksProvider(CANDIDATES_3)
+    gemini = FakePicksGemini()
+
+    out = generate_picks(session, provider, FakePicksNews(), FakePicksFunds(), gemini,
+                         now_utc=NOW_UTC, n=3)
+
+    assert len(out["picks"]) == 3
+    # (b) regime 只算一次并复用给本轮所有候选,不是每个候选各抓一次 SPY。
+    assert provider.spy_fetch_calls == 1

@@ -32,6 +32,7 @@ from app.llm.gemini import GeminiClient
 from app.services.briefing_service import get_stock_briefing, summarize_bars
 from app.services.committee_service import run_committee
 from app.services.market_data_service import fetch_bars
+from app.services.market_regime_service import get_regime, regime_context_line
 from app.services.memory_service import get_committee_context
 from app.store.repos.paper_repo import get_positions
 from app.util.trading_day import et_trading_day
@@ -174,10 +175,21 @@ def analyze_stock_route(
         briefing = get_stock_briefing(sym, provider, news_provider, fundamentals_provider, as_of)
         held = sym in get_positions(session)
         memory_context = get_committee_context(session, sym)
+        # ADVISORY CONTEXT ONLY(同 memory_context 款红线):大盘 regime(SPY vs
+        # 200 日均线)只喂进委员会 prompt 作参考,不改变本端点"纯分析、绝不下单"
+        # 的性质。取价失败/规则计算异常都降级为空字符串,不拖垮这次分析请求。
+        try:
+            regime = get_regime(provider, as_of)
+            market_context = regime_context_line(regime)
+        except Exception:
+            logger.warning("stock analyze: market regime computation failed for %s", sym,
+                           exc_info=True)
+            market_context = ""
         # 分析only:run_committee 只产出裁决草稿,这里直接原样返回展示——不落库、
         # 不调用 decision_service.submit_decision、不经 order_manager,不生成任何
         # 订单/持仓变化(见 tests/api/test_stock.py 的 no-order/no-decision 断言)。
-        result = run_committee(gemini_client, briefing, held=held, memory_context=memory_context)
+        result = run_committee(gemini_client, briefing, held=held, memory_context=memory_context,
+                               market_context=market_context)
         return {
             "symbol": sym,
             "as_of": as_of.isoformat(),

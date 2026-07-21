@@ -25,6 +25,7 @@ from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
 from app.services.decision_service import TRADE_ACTIONS, submit_decision
 from app.services.market_data_service import fetch_bars, latest_closes_for, open_prices_for
+from app.services.market_regime_service import get_regime, regime_context_line
 from app.services.memory_service import get_committee_context
 from app.services.reflection_service import reflect_on_closed_trades
 from app.services.analysis_service import run_screen_on_bars
@@ -105,6 +106,17 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
     fill_prices = ({**prices, **open_prices_for(price_provider, eval_symbols, as_of)}
                    if settle else {})
 
+    # ADVISORY CONTEXT ONLY(同 memory_context 款红线):大盘 regime(SPY vs 200
+    # 日均线)只算这一次,给本轮所有标的复用——不是每只标的各抓一次 SPY(SPY 是
+    # 大盘背景,与具体标的无关)。取价失败/规则计算异常都不能中断整轮循环,兜底
+    # 降级为空字符串(不喂进委员会 prompt,不是 crash)。
+    try:
+        regime = get_regime(price_provider, as_of)
+        market_context = regime_context_line(regime)
+    except Exception:
+        logger.exception("trade cycle: market regime computation failed")
+        market_context = ""
+
     decisions = []
     errors = []
     fills = []
@@ -118,7 +130,8 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             # prompt 作参考,不改变闸门/下单路径(见 app/services/memory_service.py)。
             memory_context = get_committee_context(session, symbol)
             committee = run_committee(gemini_client, briefing, held=held,
-                                      memory_context=memory_context)
+                                      memory_context=memory_context,
+                                      market_context=market_context)
             if gemini_client is not None:
                 gemini_calls += 1
             action, shares = _size_shares(
