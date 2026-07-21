@@ -134,6 +134,64 @@ def test_list_decisions_empty(client, session):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/decisions/scorecard
+# ---------------------------------------------------------------------------
+
+def _seed_decisions(session, n, action="buy", confidence=0.8, as_of=dt.date(2026, 7, 10)):
+    for i in range(n):
+        save_decision(session, as_of, f"SYM{i}", action, confidence, "advisory", "{}")
+
+
+def test_scorecard_route_returns_expected_shape(client, session):
+    _seed_decisions(session, 12)
+    session.commit()
+
+    resp = client.get("/api/decisions/scorecard")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, dict)  # not a list -> proves it's not the /decisions list route
+    for key in ("total", "by_action", "by_action_pct", "confidence", "histogram",
+               "by_mode", "gate", "flags"):
+        assert key in body
+    assert body["total"] == 12
+
+
+def test_scorecard_route_not_shadowed_by_decisions_list_route(client, session):
+    _seed_decisions(session, 12)
+    session.commit()
+
+    scorecard_body = client.get("/api/decisions/scorecard").json()
+    list_body = client.get("/api/decisions").json()
+
+    assert isinstance(scorecard_body, dict) and "flags" in scorecard_body
+    assert isinstance(list_body, list) and len(list_body) == 12
+
+
+def test_scorecard_route_empty_db_returns_200_no_crash(client, session):
+    resp = client.get("/api/decisions/scorecard")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 0
+    assert body["confidence"]["mean"] is None
+    assert body["flags"][0]["code"] == "insufficient_data"
+
+
+def test_scorecard_route_days_param_filters(client, session):
+    save_decision(session, dt.date(2026, 6, 1), "OLD", "buy", 0.8, "advisory", "{}")
+    save_decision(session, dt.date(2026, 7, 19), "RECENT", "buy", 0.8, "advisory", "{}")
+    session.commit()
+
+    resp = client.get("/api/decisions/scorecard", params={"days": 5})
+    assert resp.status_code == 200
+    # window_days echoes back what was requested regardless of how many rows match
+    assert resp.json()["window_days"] == 5
+
+
+def test_scorecard_route_does_not_require_token(unsecured_client):
+    assert unsecured_client.get("/api/decisions/scorecard").status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # GET /api/performance
 # ---------------------------------------------------------------------------
 

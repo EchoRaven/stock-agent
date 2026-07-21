@@ -1,10 +1,16 @@
-"""GET /api/decisions + GET /api/performance —— 只读:决策历史浏览 + 从
-trade_review 复盘条目聚合出的业绩战绩单(这是判断委员会长期是否靠谱的起点)。
+"""GET /api/decisions + GET /api/decisions/scorecard + GET /api/performance ——
+只读:决策历史浏览 + 决策记分卡(委员会推荐是否有区分度) + 从 trade_review
+复盘条目聚合出的业绩战绩单(这是判断委员会长期是否靠谱的起点)。
 
 只读约定(与 /api/dashboard、/api/memory 一致):GET 不设 token 门禁,不写库
 (不调用 session.commit()),不发起任何网络请求——/api/performance 的权益
 用持仓 avg_cost 近似(与 /api/dashboard 同一约定),不取实时行情,因此不含
-未实现的盯市盈亏(mark-to-market)。
+未实现的盯市盈亏(mark-to-market)。/api/decisions/scorecard 是纯聚合(见
+app/services/scorecard_service.py),同样不碰 LLM/网络。
+
+路由顺序注意:/decisions/scorecard 必须声明在任何未来的 /decisions/{id} 风格
+路由之前,否则会被当成 id 路径参数吞掉(FastAPI 按声明顺序匹配)——当前本模块
+还没有 /decisions/{id} 路由,但顺序先摆对,免得以后加了忘记挪。
 
 payload_json / evidence_json 都是外部写入的自由格式 JSON;这里全程防御式解析
 (json.loads 失败、类型不对、字段缺失都当作"没有"处理),绝不因脏数据 500。
@@ -15,6 +21,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_session
+from app.services.scorecard_service import build_scorecard
 from app.store.models import DecisionRow, MemoryEntryRow
 from app.store.repos.decision_repo import get_recent_decisions
 from app.store.repos.memory_repo import get_entries
@@ -54,6 +61,12 @@ def _decision_to_dict(row: DecisionRow) -> dict:
         "chair_verdict": _chair_verdict(row.payload_json),
         "created_at": row.created_at.isoformat(),
     }
+
+
+@router.get("/decisions/scorecard")
+def decisions_scorecard_route(days: int | None = Query(None, ge=1),
+                              session: Session = Depends(get_session)) -> dict:
+    return build_scorecard(session, days=days)
 
 
 @router.get("/decisions")

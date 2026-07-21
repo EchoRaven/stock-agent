@@ -307,6 +307,47 @@ export interface DecisionHistoryItem {
   created_at: string;
 }
 
+/** Decision scorecard — measures whether the committee's recommendations
+ * carry discriminative signal (action mix, confidence distribution, and
+ * calibration flags). Pure aggregation over DecisionRow/OrderRow, mirrors
+ * backend/app/services/scorecard_service.py. */
+export type ScorecardFlagSeverity = "warn" | "info";
+
+export interface ScorecardFlag {
+  code: string;
+  severity: ScorecardFlagSeverity;
+  message: string;
+}
+
+export interface ScorecardConfidence {
+  n: number;
+  mean: number | null;
+  median: number | null;
+  min: number | null;
+  max: number | null;
+  stdev: number | null;
+}
+
+export interface ScorecardHistogramBucket {
+  bucket: string;
+  count: number;
+}
+
+export interface Scorecard {
+  total: number;
+  distinct_symbols: number;
+  window_days: number | null;
+  as_of_from: string | null;
+  as_of_to: string | null;
+  by_action: { buy: number; sell: number; hold: number };
+  by_action_pct: { buy: number; sell: number; hold: number };
+  confidence: ScorecardConfidence;
+  histogram: ScorecardHistogramBucket[];
+  by_mode: Record<string, number>;
+  gate: Record<string, number>;
+  flags: ScorecardFlag[];
+}
+
 export type CommitteeRoleKey = "technical" | "fundamental" | "sentiment" | "bear";
 
 export interface Pick {

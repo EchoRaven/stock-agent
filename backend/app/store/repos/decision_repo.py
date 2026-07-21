@@ -28,3 +28,12 @@ def get_recent_decisions(session: Session, symbol: str | None = None,
         stmt = stmt.where(DecisionRow.symbol == symbol)
     stmt = stmt.order_by(DecisionRow.created_at.desc(), DecisionRow.id.desc()).limit(limit)
     return list(session.scalars(stmt))
+
+
+def get_decisions_since(session: Session, since: dt.date | None = None) -> list[DecisionRow]:
+    """记分卡聚合用:全量决策(since 为 None 时)或 as_of >= since 的窗口,按 as_of 排序。"""
+    stmt = select(DecisionRow)
+    if since is not None:
+        stmt = stmt.where(DecisionRow.as_of >= since)
+    stmt = stmt.order_by(DecisionRow.as_of)
+    return list(session.scalars(stmt))
