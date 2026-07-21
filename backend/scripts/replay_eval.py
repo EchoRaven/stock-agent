@@ -166,8 +166,16 @@ def _print_report(session, price_provider, horizons):
                 print(f"        {b['bucket']:>9s}  n={b['n']:3d} "
                       f"均值={b['mean_return_pct']:+.3f}% 命中={hit}")
         sig = block["confidence_signal"]
-        print(f"      信号门控: n={sig['n']} distinct_days={sig['distinct_days']}")
+        gate = f"      信号门控: n={sig['n']} distinct_days={sig['distinct_days']}"
+        if sig.get("t_stat") is not None:
+            gate += (f" t={sig['t_stat']} (临界 {sig['t_critical']}) "
+                     f"显著={sig['significant']}")
+        if sig.get("dominant_confidence_share") is not None:
+            gate += f" 最常见置信度占比={sig['dominant_confidence_share']:.0%}"
+        print(gate)
         print(f"      => {sig['verdict'] or sig.get('note')}")
+        if sig.get("caveat"):
+            print(f"      ⚠ {sig['caveat']}")
 
     print("\n" + "=" * 72)
     print("偏差提醒(见文件头):基本面非 point-in-time(用的是今天的财报)、")

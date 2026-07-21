@@ -388,9 +388,22 @@ export interface ForwardReturnSignal {
    */
   distinct_days: number;
   pearson_r: number | null;
+  /**
+   * Significance is tested against `distinct_days`, NOT row count — same-day
+   * decisions are not independent observations, so rows overstate the evidence.
+   * A non-null `pearson_r` with `significant: false` must never be read as
+   * "higher confidence is better".
+   */
+  t_stat?: number | null;
+  t_critical?: number | null;
+  significant?: boolean;
+  /** Share of matured buys sitting on the single most common confidence value. */
+  dominant_confidence_share?: number | null;
   verdict: string | null;
   /** Present only when no conclusion was drawn (which gate failed / no variance). */
   note?: string;
+  /** Present when the correlation rests on a handful of outlying confidence values. */
+  caveat?: string;
 }
 
 export interface ForwardReturnHorizon {

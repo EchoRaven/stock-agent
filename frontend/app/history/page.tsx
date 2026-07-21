@@ -452,9 +452,13 @@ export default function HistoryPage() {
                           <span className="text-slate-500">{signal.note}</span>
                         )}
                         <span className="ml-1 text-slate-400">
-                          ({signal.n} 条买入 / {signal.distinct_days} 个决策日)
+                          ({signal.n} 条买入 / {signal.distinct_days} 个决策日
+                          {signal.significant === false && " · 未通过显著性检验"})
                         </span>
                       </p>
+                      {signal.caveat && (
+                        <p className="text-xs text-amber-700">⚠ {signal.caveat}</p>
+                      )}
                     </>
                   )}
                 </div>

@@ -28,6 +28,7 @@ import bisect
 import datetime as dt
 import math
 import statistics
+from collections import Counter
 
 from sqlalchemy.orm import Session
 
@@ -52,6 +53,24 @@ MIN_SIGNAL_N = 20  # matured BUY decisions needed before confidence_signal draws
 # from a single day passed the row-count gate and produced r=0.112, which should
 # never have been reported as a conclusion.
 MIN_SIGNAL_DAYS = 5
+
+# Two-tailed 5% critical t values by degrees of freedom; df > 30 -> normal 1.96.
+# Used to decide whether an observed correlation is distinguishable from noise.
+T_CRIT_05 = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+    15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080,
+    22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048,
+    29: 2.045, 30: 2.042,
+}
+T_CRIT_05_LARGE_DF = 1.96
+# A correlation is only called real if it survives a test whose sample size is
+# the number of DECISION DAYS, not the number of rows. Same-day buys ride the
+# same market move, so rows massively overstate the evidence: the 2026-07-21
+# replay had r=0.257 over 58 rows (t=1.99, nominally borderline) but only 12
+# days -> t=0.84, nowhere near significant. Judging by rows would have shipped
+# "high confidence really is better" off ~12 independent observations.
+DOMINANT_CONFIDENCE_SHARE_THRESHOLD = 0.6
 FORWARD_RETURN_LOOKBACK_BUFFER_DAYS = 10  # bar-fetch window pad before min(as_of)
 CONFIDENCE_SIGNAL_POS_THRESHOLD = 0.15
 CONFIDENCE_SIGNAL_NEG_THRESHOLD = -0.15
@@ -299,11 +318,33 @@ def _pearson_r(xs: list[float], ys: list[float]) -> float | None:
     return num / (den_x * den_y)
 
 
-def _signal_verdict(r: float) -> str:
+def _t_critical(df: int) -> float | None:
+    """双尾 5% 临界 t 值;df < 1 无法检验 → None。"""
+    if df < 1:
+        return None
+    return T_CRIT_05.get(df, T_CRIT_05_LARGE_DF)
+
+
+def _t_statistic(r: float, df: int) -> float | None:
+    """|t| = |r|·sqrt(df)/sqrt(1-r²)。df<1 → None;|r|>=1(完全相关)→ inf。"""
+    if df < 1:
+        return None
+    if abs(r) >= 1.0:
+        return math.inf
+    return abs(r) * math.sqrt(df) / math.sqrt(1 - r * r)
+
+
+def _signal_verdict(r: float, significant: bool, distinct_days: int) -> str:
+    """先说显著性再说方向 —— 不显著时绝不能读成"高置信度更好"。"""
+    direction = ("正" if r > CONFIDENCE_SIGNAL_POS_THRESHOLD
+                 else "负" if r < CONFIDENCE_SIGNAL_NEG_THRESHOLD else "≈无")
+    if not significant:
+        return (f"方向为{direction}相关(r={r}),但**不显著**:按 {distinct_days} 个决策日"
+                f"(而非行数)做保守检验后,与噪声无法区分,不能据此调整校准")
     if r > CONFIDENCE_SIGNAL_POS_THRESHOLD:
-        return f"置信度与收益正相关(r={r})——高置信度确实更好"
+        return f"置信度与收益正相关(r={r})且通过按天保守检验——高置信度确实更好"
     if r < CONFIDENCE_SIGNAL_NEG_THRESHOLD:
-        return f"负相关(r={r})——置信度反向,需重新校准"
+        return f"负相关(r={r})且显著——置信度反向,需重新校准"
     return f"≈无关(r={r})——置信度目前不带信息"
 
 
@@ -339,7 +380,31 @@ def _confidence_signal(matured_buys: list[tuple[float, float, dt.date]]) -> dict
             "note": "置信度或收益在样本内没有变化,无法计算相关系数",
         }
     r3 = _round3(r)
-    return {**base, "pearson_r": r3, "verdict": _signal_verdict(r3)}
+
+    # 显著性按**天数**检验,不按行数(见 T_CRIT_05 注释):同一天的多条决策
+    # 不是独立观测,用行数会把噪声判成信号。
+    df = distinct_days - 2
+    t_crit = _t_critical(df)
+    t_stat = _t_statistic(r, df)
+    significant = t_stat is not None and t_crit is not None and t_stat > t_crit
+
+    # 置信度取值高度集中时,"相关性"实际上由少数几条偏离值决定,不是真的梯度。
+    counts = Counter(confidences)
+    dominant_share = _round3(counts.most_common(1)[0][1] / n)
+
+    out = {
+        **base,
+        "pearson_r": r3,
+        "t_stat": _round3(t_stat) if t_stat is not None else None,
+        "t_critical": t_crit,
+        "significant": significant,
+        "dominant_confidence_share": dominant_share,
+        "verdict": _signal_verdict(r3, significant, distinct_days),
+    }
+    if dominant_share >= DOMINANT_CONFIDENCE_SHARE_THRESHOLD:
+        out["caveat"] = (f"{dominant_share:.0%} 的买入置信度都是同一个值,"
+                         f"所谓相关性其实由少数几条偏离值决定,不是真实梯度")
+    return out
 
 
 def _build_forward_returns_note(total: int, distinct_days: int,

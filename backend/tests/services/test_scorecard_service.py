@@ -459,6 +459,58 @@ def test_forward_returns_confidence_signal_same_day_pile_refuses_conclusion(sess
     assert f"≥{MIN_SIGNAL_DAYS} 天" in signal["note"]
 
 
+def test_forward_returns_weak_correlation_reported_as_not_significant(session):
+    """两道门都过了,但相关性弱到与噪声无法区分 → 必须说"不显著"。
+
+    显著性按**决策天数**检验而不是行数:同一天的多条决策不独立,用行数会把
+    噪声判成信号。2026-07-21 回放实测 r=0.257/58行 看着"勉强显著",按 12 天
+    检验 t=0.84 完全不显著——就是这个用例防的事。
+    """
+    n = 20
+    bars_map = {}
+    for i in range(n):
+        confidence = round(0.5 + 0.02 * i, 3)
+        ret = (10 if i % 2 == 0 else -10) + 0.5 * i  # 强噪声淹没弱趋势
+        day_idx = i % MIN_SIGNAL_DAYS
+        save_decision(session, dt.date.fromisoformat(FR_DATES[day_idx]), f"WEAK{i}",
+                      "buy", confidence, "advisory", "{}")
+        bars_map[f"WEAK{i}"] = _spread_over_days_bars(day_idx, ret)
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map=bars_map)
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["n"] == n and signal["distinct_days"] == MIN_SIGNAL_DAYS
+    assert signal["pearson_r"] is not None  # 相关系数照给
+    assert signal["significant"] is False  # 但不显著
+    assert signal["t_stat"] < signal["t_critical"]
+    assert "不显著" in signal["verdict"]
+    # 绝不能读成"高置信度更好"
+    assert "确实更好" not in signal["verdict"]
+
+
+def test_forward_returns_dominant_confidence_value_flagged(session):
+    """绝大多数买入用同一个置信度值 → 所谓"相关性"由少数偏离值决定,必须标注。"""
+    n = 20
+    bars_map = {}
+    for i in range(n):
+        confidence = 0.85 if i >= 4 else 0.6  # 16/20 = 80% 同一个值
+        day_idx = i % MIN_SIGNAL_DAYS
+        save_decision(session, dt.date.fromisoformat(FR_DATES[day_idx]), f"DOM{i}",
+                      "buy", confidence, "advisory", "{}")
+        bars_map[f"DOM{i}"] = _spread_over_days_bars(day_idx, i)
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map=bars_map)
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["dominant_confidence_share"] == pytest.approx(0.8)
+    assert "caveat" in signal
+    assert "同一个值" in signal["caveat"]
+
+
 def test_forward_returns_confidence_signal_zero_variance_no_conclusion(session):
     # >= MIN_SIGNAL_N matured buys spanning enough days (so the day gate passes)
     # but every confidence is identical -> undefined correlation, must not be
