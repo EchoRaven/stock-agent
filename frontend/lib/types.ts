@@ -345,6 +345,17 @@ export interface Scorecard {
   histogram: ScorecardHistogramBucket[];
   by_mode: Record<string, number>;
   gate: Record<string, number>;
+  /**
+   * How many decisions were made while holding the symbol. A sell is only
+   * structurally possible when held, so sell rates must use the `held`
+   * denominator — buy-side decisions can never be sells. `unknown` counts
+   * legacy rows written before this was recorded.
+   */
+  held_coverage?: { held: number; not_held: number; unknown: number };
+  /** Sells / held decisions. null when nothing was held (rate undefined, not 0). */
+  sell_rate_among_held?: number | null;
+  /** Buys / not-held decisions. null when nothing was un-held. */
+  buy_rate_among_not_held?: number | null;
   flags: ScorecardFlag[];
 }
 

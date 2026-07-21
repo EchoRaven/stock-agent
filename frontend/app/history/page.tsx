@@ -281,6 +281,37 @@ export default function HistoryPage() {
               <span className="text-slate-400">{scorecard.distinct_symbols} 只标的</span>
             </div>
 
+            {/* 卖出只在持仓决策里结构上可能,所以卖出率必须用持仓做分母;
+                unknown 是加该字段之前的旧决策,不能当作"未持仓"。 */}
+            {scorecard.held_coverage && (
+              <p className="text-xs text-slate-500">
+                持仓状态:持有 {scorecard.held_coverage.held} · 未持有{" "}
+                {scorecard.held_coverage.not_held}
+                {scorecard.held_coverage.unknown > 0 &&
+                  ` · 旧数据未标记 ${scorecard.held_coverage.unknown}`}
+                {scorecard.sell_rate_among_held !== null &&
+                  scorecard.sell_rate_among_held !== undefined && (
+                    <>
+                      {" "}
+                      · 持仓中卖出率{" "}
+                      <span className="tabular-nums text-slate-700">
+                        {pct(scorecard.sell_rate_among_held, 1)}
+                      </span>
+                    </>
+                  )}
+                {scorecard.buy_rate_among_not_held !== null &&
+                  scorecard.buy_rate_among_not_held !== undefined && (
+                    <>
+                      {" "}
+                      · 未持仓中买入率{" "}
+                      <span className="tabular-nums text-slate-700">
+                        {pct(scorecard.buy_rate_among_not_held, 1)}
+                      </span>
+                    </>
+                  )}
+              </p>
+            )}
+
             <div className="flex flex-wrap gap-2">
               {scorecard.flags.map((flag) => (
                 <span
