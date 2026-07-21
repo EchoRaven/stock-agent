@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 
 import { ApiError, apiGet } from "@/lib/api";
 import { money, pct } from "@/lib/format";
-import type { DecisionHistoryItem, MemoryEntry, PerformanceResponse } from "@/lib/types";
+import type {
+  DecisionHistoryItem,
+  MemoryEntry,
+  PerformanceResponse,
+  Scorecard,
+  ScorecardFlag,
+} from "@/lib/types";
 import { ErrorBanner, StatCard, Th } from "@/components/ui";
 import { PriceChart } from "@/components/PriceChart";
 
@@ -63,9 +69,50 @@ const ACTION_COLORS: Record<string, string> = {
   hold: "text-slate-500",
 };
 
+const ACTION_LABELS: Record<string, string> = { buy: "买入", sell: "卖出", hold: "观望" };
+
+const ACTION_BAR_COLORS: Record<string, string> = {
+  buy: "bg-emerald-500",
+  sell: "bg-red-500",
+  hold: "bg-slate-400",
+};
+
+const FLAG_CHIP_STYLES: Record<ScorecardFlag["severity"], string> = {
+  warn: "border border-amber-300 bg-amber-50 text-amber-800",
+  info: "border border-slate-200 bg-slate-100 text-slate-600",
+};
+
 function errMessage(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return ApiError.detailToMessage(err.detail);
   return err instanceof Error ? err.message : fallback;
+}
+
+/** Track + fill bar shared by the action-mix and confidence-histogram rows.
+ * `widthPct` is pre-clamped by the caller (proportion of total for action mix,
+ * proportion of the tallest bucket for the histogram). */
+function BarRow({
+  label,
+  detail,
+  widthPct,
+  barClassName,
+}: {
+  label: string;
+  detail: string;
+  widthPct: number;
+  barClassName: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-14 shrink-0 text-slate-500">{label}</span>
+      <div className="h-2 flex-1 rounded-full bg-slate-100">
+        <div
+          className={`h-2 rounded-full ${barClassName}`}
+          style={{ width: `${Math.max(0, Math.min(100, widthPct))}%` }}
+        />
+      </div>
+      <span className="w-16 shrink-0 text-right tabular-nums text-slate-600">{detail}</span>
+    </div>
+  );
 }
 
 export default function HistoryPage() {
@@ -77,6 +124,9 @@ export default function HistoryPage() {
 
   const [decisions, setDecisions] = useState<DecisionHistoryItem[] | null>(null);
   const [decisionsError, setDecisionsError] = useState<string | null>(null);
+
+  const [scorecard, setScorecard] = useState<Scorecard | null>(null);
+  const [scorecardError, setScorecardError] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
 
@@ -115,6 +165,18 @@ export default function HistoryPage() {
         .catch((err) => {
           if (!cancelled) setDecisionsError(errMessage(err, "决策历史加载失败"));
         }),
+      // Scorecard is best-effort: the rest of the history page (performance,
+      // trade reviews, decisions table) must still render if this fails.
+      apiGet<Scorecard>("decisions/scorecard")
+        .then((res) => {
+          if (!cancelled) {
+            setScorecard(res);
+            setScorecardError(null);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setScorecardError(errMessage(err, "决策记分卡加载失败"));
+        }),
     ]).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -124,7 +186,7 @@ export default function HistoryPage() {
     };
   }, []);
 
-  if (loading && !perf && !trades && !decisions) {
+  if (loading && !perf && !trades && !decisions && !scorecard) {
     return <p className="text-sm text-slate-500">Loading…</p>;
   }
 
@@ -132,6 +194,16 @@ export default function HistoryPage() {
     date: p.date,
     close: p.cum_pnl,
   }));
+
+  // "insufficient" (or empty) data means the only flag is insufficient_data —
+  // mirrors the backend's MIN_FOR_FLAGS gate (app/services/scorecard_service.py).
+  // In that case we show the flag message but skip the bars (nothing meaningful
+  // to draw off <10 decisions).
+  const scorecardInsufficient =
+    scorecard?.flags.some((f) => f.code === "insufficient_data") ?? true;
+  const maxHistCount = scorecard
+    ? Math.max(1, ...scorecard.histogram.map((b) => b.count))
+    : 1;
 
   return (
     <div className="space-y-6">
@@ -164,6 +236,94 @@ export default function HistoryPage() {
           <p className="text-xs text-slate-400">权益按成本价计,未含未实现浮盈亏。</p>
         </section>
       )}
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold text-slate-700">决策记分卡</h2>
+        <p className="text-xs text-slate-500">
+          委员会的推荐是否有区分度——动作分布是否偏买、置信度是否压缩在一小段区间。
+        </p>
+        {scorecardError && <ErrorBanner message={scorecardError} />}
+        {scorecard && (
+          <div className="space-y-4 rounded-md border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm text-slate-600">
+              <span>
+                样本{" "}
+                <span className="font-semibold tabular-nums text-slate-900">
+                  {scorecard.total}
+                </span>{" "}
+                条
+              </span>
+              <span>
+                窗口{" "}
+                {scorecard.window_days === null ? "全部历史" : `近 ${scorecard.window_days} 天`}
+              </span>
+              {scorecard.as_of_from && scorecard.as_of_to && (
+                <span className="text-slate-400">
+                  {scorecard.as_of_from} 至 {scorecard.as_of_to}
+                </span>
+              )}
+              <span className="text-slate-400">{scorecard.distinct_symbols} 只标的</span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {scorecard.flags.map((flag) => (
+                <span
+                  key={flag.code}
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium ${FLAG_CHIP_STYLES[flag.severity]}`}
+                >
+                  {flag.message}
+                </span>
+              ))}
+            </div>
+
+            {!scorecardInsufficient && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    动作分布
+                  </div>
+                  {(["buy", "sell", "hold"] as const).map((action) => (
+                    <BarRow
+                      key={action}
+                      label={ACTION_LABELS[action]}
+                      detail={`${scorecard.by_action[action]} (${pct(scorecard.by_action_pct[action], 1)})`}
+                      widthPct={scorecard.by_action_pct[action] * 100}
+                      barClassName={ACTION_BAR_COLORS[action]}
+                    />
+                  ))}
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                    置信度分布
+                  </div>
+                  {scorecard.histogram.map((b) => (
+                    <BarRow
+                      key={b.bucket}
+                      label={b.bucket}
+                      detail={String(b.count)}
+                      widthPct={(b.count / maxHistCount) * 100}
+                      barClassName="bg-indigo-400"
+                    />
+                  ))}
+                  <p className="pt-1 text-xs text-slate-500">
+                    均值{" "}
+                    {scorecard.confidence.mean === null ? "—" : scorecard.confidence.mean.toFixed(3)}{" "}
+                    · 中位数{" "}
+                    {scorecard.confidence.median === null
+                      ? "—"
+                      : scorecard.confidence.median.toFixed(3)}{" "}
+                    · 标准差{" "}
+                    {scorecard.confidence.stdev === null
+                      ? "—"
+                      : scorecard.confidence.stdev.toFixed(3)}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold text-slate-700">累计已实现盈亏</h2>

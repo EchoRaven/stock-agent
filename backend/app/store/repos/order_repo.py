@@ -6,7 +6,7 @@ rejected/cancelled 是终态审计记录,不占用重复保护槽位——拒绝
 """
 import datetime as dt
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.store.models import OrderRow
@@ -69,6 +69,12 @@ def update_status(session: Session, order_id: int, status: str, reason: str = ""
         row.reason = reason
     session.flush()
     return row
+
+
+def count_orders_by_status(session: Session) -> dict:
+    """记分卡用:全量订单按 status 分组计数(纯聚合查询,不过滤 as_of)。"""
+    stmt = select(OrderRow.status, func.count(OrderRow.id)).group_by(OrderRow.status)
+    return {status: count for status, count in session.execute(stmt)}
 
 
 def buy_symbols_today(session: Session, as_of: dt.date) -> set:
