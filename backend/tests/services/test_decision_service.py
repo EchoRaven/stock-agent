@@ -7,6 +7,7 @@ from app.services.decision_service import (ACTIONS, DecisionValidationError,
                                            submit_decision, validate_decision)
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import get_decisions
+from app.store.repos.paper_repo import set_position
 from tests.helpers import make_decision_payload
 
 
@@ -58,3 +59,32 @@ def test_submit_persists():
         rows = get_decisions(session, dt.date(2026, 7, 17))
         assert len(rows) == 1 and rows[0].mode == "advisory"
         assert json.loads(rows[0].payload_json)["chair"]["bear_rebuttal"]
+
+
+# ---------------------------------------------------------------------------
+# held: submit_decision must record whether we actually hold the symbol at
+# submit time, independent of what action the payload claims — the scorecard
+# needs this to tell "committee chose not to sell" from "selling was
+# structurally impossible" (see app/services/scorecard_service.py).
+# ---------------------------------------------------------------------------
+
+def test_submit_records_held_true_when_position_exists():
+    engine = make_engine(":memory:")
+    init_db(engine)
+    with make_session_factory(engine)() as session:
+        set_position(session, "AAPL", 10, 150.0)
+        session.commit()
+        submit_decision(session, make_decision_payload(symbol="AAPL"))
+        rows = get_decisions(session, dt.date(2026, 7, 17))
+        assert len(rows) == 1
+        assert rows[0].held is True
+
+
+def test_submit_records_held_false_when_no_position():
+    engine = make_engine(":memory:")
+    init_db(engine)
+    with make_session_factory(engine)() as session:
+        submit_decision(session, make_decision_payload(symbol="AAPL"))
+        rows = get_decisions(session, dt.date(2026, 7, 17))
+        assert len(rows) == 1
+        assert rows[0].held is False

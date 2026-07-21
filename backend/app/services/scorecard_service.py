@@ -127,7 +127,62 @@ def _histogram(confidences: list[float]) -> list[dict]:
     return [{"bucket": label, "count": counts[label]} for label, _, _ in HIST_BUCKETS]
 
 
-def _build_flags(total: int, by_action: dict, by_action_pct: dict, confidence: dict) -> list[dict]:
+def _build_no_sell_flags(by_action: dict, by_action_pct: dict, total: int,
+                         held_coverage: dict) -> list[dict]:
+    """no_sells 的分母必须是"持仓决策",不是全部决策——sell 只有 held=True
+    时才结构上可能(committee_service._clamp_action 会把 held=False 时的 sell
+    改写成 hold)。买入侧决策结构上不可能是 sell,混进分母会系统性低估卖出率。
+
+    三条分支:
+    - held_n > 0:按持仓决策判定,消息里点名分母(如 "3/48")。
+    - held_n == 0 且**全部**是旧数据(held 全未知)→ 没有持仓信息可用,退回
+      旧的全量分母行为,但消息里点名是旧数据,不能悄悄冒充新口径。
+    - held_n == 0 但**不是**全部旧数据(即存在明确 held=False 的行)→ 卖出
+      结构性不可能,给 sell_untestable(info),绝不给 no_sells——这正是
+      2026-07-21 那次"3/62=4.8% 看起来像委员会不肯卖"的假象来源:诚实分母
+      其实是 3/48=6.25%,而当 held 分母为 0 时更是连"不肯卖"这个判断本身
+      都无法成立。
+    """
+    held_n = held_coverage["held"]
+    not_held_n = held_coverage["not_held"]
+    unknown_n = held_coverage["unknown"]
+
+    if held_n > 0:
+        sells = by_action["sell"]
+        sell_rate = sells / held_n
+        if sells == 0 or sell_rate < NO_SELLS_PCT_THRESHOLD:
+            return [{
+                "code": "no_sells",
+                "severity": "warn",
+                "message": f"持仓决策里几乎不给卖出建议({sells}/{held_n})",
+            }]
+        return []
+
+    if unknown_n == total:
+        # 没有任何一行带持仓标记(纯旧数据)——没法按持仓算,退回旧的全量
+        # 分母,但要说明白这是旧数据。
+        sell_pct = by_action_pct["sell"]
+        if by_action["sell"] == 0 or sell_pct < NO_SELLS_PCT_THRESHOLD:
+            return [{
+                "code": "no_sells",
+                "severity": "warn",
+                "message": "几乎不给卖出建议(按全部决策计,旧数据无持仓标记)",
+            }]
+        return []
+
+    # held_n == 0 且存在明确的 not_held 行:这个窗口里一次都没持仓过,卖出
+    # 在结构上不可能发生——这不是"委员会不肯卖",是"根本没机会卖"。
+    return [{
+        "code": "sell_untestable",
+        "severity": "info",
+        "message": (f"本窗口没有出现持仓状态下的决策(held={held_n}/"
+                    f"not_held={not_held_n}),卖出在结构上不可能发生,"
+                    "卖出行为本期无法测量——不代表委员会不肯卖"),
+    }]
+
+
+def _build_flags(total: int, by_action: dict, by_action_pct: dict, confidence: dict,
+                 held_coverage: dict) -> list[dict]:
     if total < MIN_FOR_FLAGS:
         return [{
             "code": "insufficient_data",
@@ -145,13 +200,7 @@ def _build_flags(total: int, by_action: dict, by_action_pct: dict, confidence: d
             "message": f"买入占比 {buy_pct * 100:.1f}% 偏高——推荐缺少区分度",
         })
 
-    sell_pct = by_action_pct["sell"]
-    if by_action["sell"] == 0 or sell_pct < NO_SELLS_PCT_THRESHOLD:
-        flags.append({
-            "code": "no_sells",
-            "severity": "warn",
-            "message": "几乎不给卖出建议",
-        })
+    flags.extend(_build_no_sell_flags(by_action, by_action_pct, total, held_coverage))
 
     stdev = confidence["stdev"]
     if stdev is not None and stdev < FLAT_CONFIDENCE_STDEV_THRESHOLD:
@@ -197,16 +246,28 @@ def build_scorecard(session: Session, days: int | None = None,
     by_action = {action: 0 for action in ACTIONS}
     by_mode: dict[str, int] = {}
     confidences: list[float] = []
+    held_n = not_held_n = unknown_n = 0
     for row in rows:
         if row.action in by_action:
             by_action[row.action] += 1
         by_mode[row.mode] = by_mode.get(row.mode, 0) + 1
         confidences.append(row.confidence)
+        if row.held is True:
+            held_n += 1
+        elif row.held is False:
+            not_held_n += 1
+        else:
+            unknown_n += 1
 
     by_action_pct = {
         action: (round(count / total, 3) if total else 0.0)
         for action, count in by_action.items()
     }
+
+    held_coverage = {"held": held_n, "not_held": not_held_n, "unknown": unknown_n}
+    sell_rate_among_held = round(by_action["sell"] / held_n, 3) if held_n else None
+    buy_rate_among_not_held = (round(by_action["buy"] / not_held_n, 3)
+                               if not_held_n else None)
 
     confidence = _confidence_stats(confidences)
     histogram = _histogram(confidences)
@@ -214,7 +275,7 @@ def build_scorecard(session: Session, days: int | None = None,
     status_counts = count_orders_by_status(session)
     gate = {status: status_counts.get(status, 0) for status in STATUSES}
 
-    flags = _build_flags(total, by_action, by_action_pct, confidence)
+    flags = _build_flags(total, by_action, by_action_pct, confidence, held_coverage)
 
     return {
         "total": total,
@@ -228,6 +289,9 @@ def build_scorecard(session: Session, days: int | None = None,
         "histogram": histogram,
         "by_mode": by_mode,
         "gate": gate,
+        "held_coverage": held_coverage,
+        "sell_rate_among_held": sell_rate_among_held,
+        "buy_rate_among_not_held": buy_rate_among_not_held,
         "flags": flags,
     }
 

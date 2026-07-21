@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.execution.order_manager import handle_decision
 from app.store.repos.decision_repo import save_decision
+from app.store.repos.paper_repo import get_positions
 from app.store.repos.settings_repo import MODE_ADVISORY, get_mode
 from app.util.trading_day import et_trading_day
 
@@ -83,6 +84,9 @@ def submit_decision(session: Session, payload, prices: dict | None = None,
     normalized = validate_decision(payload)
     mode = get_mode(session)  # fail-safe:未知/未设 → advisory
     normalized["mode"] = mode
+    # scorecard 记分卡的分母需要知道提交时是否真的持有该 symbol(sell 只有
+    # held 时才结构上可能)——按实际持仓派生,不信任 payload 的 action。
+    held = normalized["symbol"] in get_positions(session)
     row = save_decision(
         session,
         as_of=dt.date.fromisoformat(normalized["as_of"]),
@@ -91,6 +95,7 @@ def submit_decision(session: Session, payload, prices: dict | None = None,
         confidence=normalized["confidence"],
         mode=mode,
         payload_json=json.dumps(normalized, ensure_ascii=False),
+        held=held,
     )
     result = {"status": "recorded", "id": row.id, "mode": mode, "symbol": row.symbol,
               "action": row.action, "as_of": normalized["as_of"]}

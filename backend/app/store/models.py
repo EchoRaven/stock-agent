@@ -40,6 +40,11 @@ class DecisionRow(Base):
     mode: Mapped[str] = mapped_column(String(16), default="advisory")
     payload_json: Mapped[str] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_utcnow)
+    # 提交时是否持有该 symbol(scorecard 用来分母:sell 只有 held 时才结构上
+    # 可能——committee_service._clamp_action 会把 held=False 时的 sell 改写成
+    # hold)。Nullable 是必须的:既有行(~46 条)早于这一列,读出来必须是
+    # None(未知),绝不能悄悄读成 False(那会被误判成"从未持有过")。
+    held: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
 
 
 class ReportRow(Base):

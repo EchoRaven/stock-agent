@@ -26,8 +26,9 @@ def session():
         yield s
 
 
-def _seed(session, action, confidence, as_of=AS_OF, symbol="AAPL", mode="advisory"):
-    save_decision(session, as_of, symbol, action, confidence, mode, "{}")
+def _seed(session, action, confidence, as_of=AS_OF, symbol="AAPL", mode="advisory",
+          held=None):
+    save_decision(session, as_of, symbol, action, confidence, mode, "{}", held=held)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,139 @@ def test_gate_counts_orders_by_status_zero_filled(session):
         "filled": 2,
         "cancelled": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# held denominator — a sell is only possible when we hold the symbol
+# (committee_service._clamp_action rewrites sell->hold when held=False), so
+# no_sells must be judged against held decisions only, not all decisions.
+# Measured live-DB bug: 3 sells / 62 all decisions = 4.8% looked like the
+# committee won't sell, but the honest figure among the 48 *held* evaluations
+# was 6.25%. See held-column-brief.md.
+# ---------------------------------------------------------------------------
+
+def test_held_coverage_counts_true_false_none(session):
+    _seed(session, "buy", 0.8, symbol="A", held=True)
+    _seed(session, "buy", 0.8, symbol="B", held=False)
+    _seed(session, "buy", 0.8, symbol="C")  # held omitted -> unknown (legacy)
+    session.commit()
+
+    result = build_scorecard(session)
+
+    assert result["held_coverage"] == {"held": 1, "not_held": 1, "unknown": 1}
+
+
+def test_sell_rate_among_held_no_sells_cites_held_denominator(session):
+    # 1 sell out of 40 held decisions -> 2.5%, below NO_SELLS_PCT_THRESHOLD
+    # (5%) -> no_sells must fire, and its message must cite 1/40 (the held
+    # count), not 1/40-of-something-else.
+    _seed(session, "sell", 0.7, symbol="S1", held=True)
+    for i in range(39):
+        _seed(session, "buy", 0.8, symbol=f"H{i}", held=True)
+    session.commit()
+
+    result = build_scorecard(session)
+
+    assert result["held_coverage"] == {"held": 40, "not_held": 0, "unknown": 0}
+    assert result["sell_rate_among_held"] == round(1 / 40, 3)
+    assert result["buy_rate_among_not_held"] is None  # not_held count is 0
+
+    codes = {f["code"] for f in result["flags"]}
+    assert "no_sells" in codes
+    assert "sell_untestable" not in codes
+    no_sells = next(f for f in result["flags"] if f["code"] == "no_sells")
+    assert no_sells["severity"] == "warn"
+    assert "1/40" in no_sells["message"]
+
+
+def test_sell_rate_among_held_calibration_ok_when_above_threshold(session):
+    # 3 sells / 48 held = 6.25%, above the 5% threshold -> no_sells must NOT
+    # fire under the honest (held) denominator, even though 3/62-all-decisions
+    # (4.8%) would have wrongly fired under the old all-decisions denominator.
+    for i in range(3):
+        _seed(session, "sell", 0.7, symbol=f"S{i}", held=True)
+    for i in range(45):
+        _seed(session, "buy", 0.8, symbol=f"H{i}", held=True)
+    for i in range(14):
+        _seed(session, "buy", 0.8, symbol=f"N{i}", held=False)
+    session.commit()
+
+    result = build_scorecard(session)
+
+    assert result["held_coverage"] == {"held": 48, "not_held": 14, "unknown": 0}
+    assert result["sell_rate_among_held"] == round(3 / 48, 3)
+    codes = {f["code"] for f in result["flags"]}
+    assert "no_sells" not in codes
+    assert "sell_untestable" not in codes
+
+
+def test_zero_held_decisions_emits_sell_untestable_not_no_sells(session):
+    """回归守卫:一个决策都没持仓过 -> 卖出结构性不可能(_clamp_action 会把
+    每个 sell 都改写成 hold),绝不能读成"委员会不肯卖"。这正是本次要修的
+    记分卡缺陷本身。"""
+    for i in range(12):
+        _seed(session, "buy", 0.8, symbol=f"B{i}", held=False)
+    session.commit()
+
+    result = build_scorecard(session)
+
+    codes = {f["code"] for f in result["flags"]}
+    assert "no_sells" not in codes
+    assert "sell_untestable" in codes
+    flag = next(f for f in result["flags"] if f["code"] == "sell_untestable")
+    assert flag["severity"] == "info"
+    assert result["held_coverage"] == {"held": 0, "not_held": 12, "unknown": 0}
+    assert result["sell_rate_among_held"] is None
+    assert result["buy_rate_among_not_held"] == 1.0
+
+
+def test_zero_held_mixed_with_unknown_still_sell_untestable(session):
+    # held-count is 0 but NOT all rows are legacy-unknown (6 are known
+    # not-held) -> still structurally-impossible, not the legacy fallback.
+    for i in range(6):
+        _seed(session, "buy", 0.8, symbol=f"B{i}", held=False)
+    for i in range(6):
+        _seed(session, "buy", 0.8, symbol=f"L{i}")  # legacy/unknown
+    session.commit()
+
+    result = build_scorecard(session)
+
+    codes = {f["code"] for f in result["flags"]}
+    assert "sell_untestable" in codes
+    assert "no_sells" not in codes
+    assert result["held_coverage"] == {"held": 0, "not_held": 6, "unknown": 6}
+
+
+def test_all_legacy_held_unknown_keeps_old_denominator_with_note(session):
+    """全是旧数据(held 全 None)-> 保留旧的全量分母行为,但消息里要点名
+    是旧数据,不能悄悄冒充新的持仓口径。"""
+    for i in range(11):
+        _seed(session, "buy", 0.85, symbol=f"B{i}")
+    _seed(session, "hold", 0.85, symbol="H0")
+    session.commit()
+
+    result = build_scorecard(session)
+
+    assert result["held_coverage"] == {"held": 0, "not_held": 0, "unknown": 12}
+    assert result["sell_rate_among_held"] is None
+    assert result["buy_rate_among_not_held"] is None
+    codes = {f["code"] for f in result["flags"]}
+    assert "no_sells" in codes
+    assert "sell_untestable" not in codes
+    no_sells = next(f for f in result["flags"] if f["code"] == "no_sells")
+    assert "旧数据" in no_sells["message"]
+
+
+def test_buy_rate_among_not_held_exact(session):
+    for i in range(5):
+        _seed(session, "buy", 0.8, symbol=f"B{i}", held=False)
+    for i in range(3):
+        _seed(session, "hold", 0.8, symbol=f"H{i}", held=False)
+    session.commit()
+
+    result = build_scorecard(session)
+
+    assert result["buy_rate_among_not_held"] == round(5 / 8, 3)
 
 
 # ---------------------------------------------------------------------------

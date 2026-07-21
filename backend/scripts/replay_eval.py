@@ -134,7 +134,7 @@ def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days,
                                       market_context=market_context)
             save_decision(session, as_of, symbol, committee["action"],
                           committee["confidence"], REPLAY_MODE,
-                          json.dumps(committee, ensure_ascii=False))
+                          json.dumps(committee, ensure_ascii=False), held=held)
             written += 1
             if verbose:
                 print(f"  {as_of}  {symbol:6s} {'HELD' if held else '    '} "

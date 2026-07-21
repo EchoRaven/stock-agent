@@ -4,6 +4,7 @@ import datetime as dt
 import pytest
 
 from app.store.db import init_db, make_engine, make_session_factory
+from app.store.models import DecisionRow
 from app.store.repos.decision_repo import get_recent_decisions, save_decision
 
 D1 = dt.date(2026, 7, 10)
@@ -17,6 +18,36 @@ def session():
     init_db(engine)
     with make_session_factory(engine)() as s:
         yield s
+
+
+# ---------------------------------------------------------------------------
+# held: records whether we held the symbol at decision time (scorecard needs
+# this to tell "chose not to sell" from "structurally could not sell" — see
+# app/services/scorecard_service.py). Must round-trip True/False/None exactly;
+# None means "unknown" (legacy row), never silently False.
+# ---------------------------------------------------------------------------
+
+def test_save_decision_persists_held_true(session):
+    row = save_decision(session, D1, "AAPL", "sell", 0.8, "advisory", "{}", held=True)
+    session.commit()
+    fetched = session.get(DecisionRow, row.id)
+    assert fetched.held is True
+
+
+def test_save_decision_persists_held_false(session):
+    row = save_decision(session, D1, "AAPL", "buy", 0.8, "advisory", "{}", held=False)
+    session.commit()
+    fetched = session.get(DecisionRow, row.id)
+    assert fetched.held is False
+
+
+def test_save_decision_held_defaults_to_none(session):
+    # caller omitted held entirely (legacy call site) -> must read back as
+    # None (unknown), not False.
+    row = save_decision(session, D1, "AAPL", "hold", 0.5, "advisory", "{}")
+    session.commit()
+    fetched = session.get(DecisionRow, row.id)
+    assert fetched.held is None
 
 
 def test_get_recent_decisions_newest_first(session):

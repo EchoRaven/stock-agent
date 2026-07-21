@@ -7,9 +7,11 @@ from app.store.models import DecisionRow
 
 
 def save_decision(session: Session, as_of: dt.date, symbol: str, action: str,
-                  confidence: float, mode: str, payload_json: str) -> DecisionRow:
+                  confidence: float, mode: str, payload_json: str,
+                  held: bool | None = None) -> DecisionRow:
     row = DecisionRow(as_of=as_of, symbol=symbol, action=action,
-                      confidence=confidence, mode=mode, payload_json=payload_json)
+                      confidence=confidence, mode=mode, payload_json=payload_json,
+                      held=held)
     session.add(row)
     session.flush()  # 拿到自增 id
     return row
