@@ -14,6 +14,16 @@
   在下一只标的过闸门前就已落库,TotalPositionCapRule/SinglePositionCapRule
   才能在同一轮里跨标的累计生效,而不是每笔都读循环开始前的同一份快照
   (defense-in-depth finding:聚合仓位上限此前不跨标的联动)。
+
+成本优化(非风控决策):逐标的循环前先做一次纯读取的容量预筛
+(_capacity_impossible_filter),提前排除"买入已经确定性不可能通过闸门"的
+非持仓候选(当日新开仓配额已耗尽 / 仍在冷却期),省下材料抓取 + 委员会
+(Gemini)调用——mirror(不导入!)app/risk/rules.py 的 MaxNewPositionsRule/
+CooldownRule 判定口径。这只能"少评估几个反正会被拒的标的",绝不能让任何
+订单被放行/创建/改变股数——真正"是否放行"的唯一权威依旧是下面的
+submit_decision → RiskGate;预筛读取失败或判断有误,最坏后果也只是多评估
+几个标的,不会导致任何本不该发生的下单。持仓标的永远不因此被跳过(committee
+仍可能判定卖出,与买入容量无关)。
 """
 import datetime as dt
 import logging
@@ -29,8 +39,8 @@ from app.services.market_regime_service import get_regime, regime_context_line
 from app.services.memory_service import get_committee_context
 from app.services.reflection_service import reflect_on_closed_trades
 from app.services.analysis_service import run_screen_on_bars
-from app.store.repos.order_repo import STATUS_SUBMITTED, get_orders_by_status
-from app.store.repos.paper_repo import get_account, get_positions
+from app.store.repos.order_repo import STATUS_SUBMITTED, buy_symbols_today, get_orders_by_status
+from app.store.repos.paper_repo import get_account, get_positions, last_sell_dates
 from app.store.repos.settings_repo import get_app_settings, get_mode
 from app.util.trading_day import et_trading_day
 
@@ -46,6 +56,50 @@ def _eval_symbols(candidates: list, positions: dict, max_eval) -> list:
             seen.add(sym)
             ordered.append(sym)
     return ordered[:max_eval] if max_eval is not None else ordered
+
+
+def _capacity_impossible_filter(session, eval_symbols: list, positions: dict,
+                                as_of: dt.date, app_settings) -> tuple:
+    """容量预筛(纯成本优化,非风控决策)——提前排除"买入已经确定性不可能通过
+    闸门"的非持仓候选,省下材料抓取 + 委员会(Gemini)调用。
+
+    Mirror(不导入!)app/risk/rules.py 里 MaxNewPositionsRule/CooldownRule 的判定
+    口径,只读同样的仓储数据(buy_symbols_today/last_sell_dates)。真正"是否
+    放行"的唯一权威仍是下面的 submit_decision → RiskGate;这里判断错了/读取
+    失败,最坏后果也只是"多评估了几个反正会被拒的标的",绝不会导致任何本
+    不该发生的下单——因此任何异常都保守降级为"不跳过任何标的"(评估全部,
+    即今天的行为)。持仓标的(committee 仍可能判定卖出,与买入容量无关)永远
+    不跳过。
+
+    返回 (kept, skipped);skipped 每项 {"symbol": ..., "reason": ...}。
+    """
+    try:
+        bought_today = buy_symbols_today(session, as_of)
+        remaining_new = app_settings.max_new_positions_per_day - len(bought_today)
+        last_sells = last_sell_dates(session)
+    except Exception:
+        logger.exception(
+            "trade cycle: capacity pre-filter failed to read state, "
+            "evaluating all candidates (fail-safe, skip nothing)")
+        return list(eval_symbols), []
+
+    kept, skipped = [], []
+    for sym in eval_symbols:
+        if sym in positions:
+            kept.append(sym)  # held: 可能被判卖出,与买入容量无关,永不跳过
+            continue
+        last_sell = last_sells.get(sym)
+        if last_sell is not None and (as_of - last_sell).days < app_settings.cooldown_days:
+            skipped.append({"symbol": sym, "reason": (
+                f"cooldown: sold on {last_sell}, "
+                f"{app_settings.cooldown_days}-day cooldown active")})
+        elif sym not in bought_today and remaining_new <= 0:
+            skipped.append({"symbol": sym, "reason": (
+                f"max new positions per day "
+                f"({app_settings.max_new_positions_per_day}) reached")})
+        else:
+            kept.append(sym)
+    return kept, skipped
 
 
 def _size_shares(action: str, symbol: str, held: bool, price, equity: float,
@@ -89,6 +143,19 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
 
     positions = get_positions(session)
     eval_symbols = _eval_symbols(candidates, positions, max_eval)
+
+    eval_symbols, skipped_no_capacity = _capacity_impossible_filter(
+        session, eval_symbols, positions, as_of, app_settings)
+    if skipped_no_capacity:
+        cooldown_n = sum(1 for s in skipped_no_capacity if s["reason"].startswith("cooldown"))
+        logger.info(
+            "trade cycle: capacity pre-filter skipped %d candidate(s) before the LLM "
+            "(%d cooldown, %d max-new-positions); evaluating %d",
+            len(skipped_no_capacity), cooldown_n,
+            len(skipped_no_capacity) - cooldown_n, len(eval_symbols))
+    else:
+        logger.info("trade cycle: capacity pre-filter skipped 0 candidates; evaluating %d",
+                   len(eval_symbols))
 
     prices = latest_closes_for(price_provider, sorted(set(eval_symbols) | set(positions)), as_of)
 
@@ -200,6 +267,7 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
         "mode": get_mode(session),
         "evaluated": len(eval_symbols),
         "skipped": skipped,
+        "skipped_no_capacity": skipped_no_capacity,
         "errors": errors,
         "decisions": decisions,
         "fills": fills,

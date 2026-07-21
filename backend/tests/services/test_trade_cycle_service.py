@@ -21,10 +21,12 @@ from app.data.fundamentals_edgar import FundamentalsProvider, FundamentalsSummar
 from app.data.news_finnhub import NewsProvider
 from app.services.trade_cycle_service import run_trade_cycle
 from app.store.db import init_db, make_engine, make_session_factory
-from app.store.repos.order_repo import STATUS_REJECTED, STATUS_SUBMITTED, get_orders_by_status
-from app.store.repos.paper_repo import get_account, get_positions, set_position
+from app.store.repos.order_repo import (STATUS_REJECTED, STATUS_SUBMITTED, STATUSES,
+                                        create_order, get_orders_by_status)
+from app.store.repos.paper_repo import add_fill, get_account, get_positions, set_position
 from app.store.repos.settings_repo import (MODE_ADVISORY, MODE_FULL_AUTO, set_mode,
                                            update_risk_params)
+from app.util.trading_day import et_trading_day
 
 FIVE_SYMBOLS = ["ONE", "TWO", "THREE", "FOUR", "FIVE"]
 
@@ -483,3 +485,135 @@ def test_settle_false_leaves_orders_submitted_no_positions(session):
     assert get_positions(session) == {}
     submitted = get_orders_by_status(session, STATUS_SUBMITTED)
     assert len(submitted) == 1 and submitted[0].symbol == "AAPL"
+
+
+# ---------------------------------------------------------------------------
+# capacity-aware pre-filter (perf, MEASURED): once the daily new-position
+# budget is exhausted / a symbol is in its post-sell cooldown, that BUY is
+# already deterministically impossible at the gate (MaxNewPositionsRule /
+# CooldownRule in app/risk/rules.py) — skip it BEFORE the LLM committee call.
+# This is a pure cost optimization: it may only ever remove work, never
+# permit/create/resize an order, and must never skip a held symbol (the
+# committee may still say sell for it). See _capacity_impossible_filter.
+# ---------------------------------------------------------------------------
+
+
+def _seed_counted_buys(session, as_of, symbols):
+    """按 buy_symbols_today 的计数口径直接造 N 张已计数的活跃买单——不必真的跑一遍
+    完整成交流水线,只为让"当日新开仓配额已用满"这个前置状态可控可复现。"""
+    for sym in symbols:
+        create_order(session, as_of, sym, "buy", 10, STATUS_SUBMITTED, MODE_FULL_AUTO)
+
+
+def test_capacity_reached_skips_non_held_candidates_before_llm_call(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    as_of = et_trading_day(NOW_UTC)
+    # exhaust today's max_new_positions_per_day (default 3) with 3 unrelated symbols
+    _seed_counted_buys(session, as_of, ["X1", "X2", "X3"])
+    set_position(session, "HELD", 10, 90.0)
+    provider = FakeProvider({"HELD": 90.0, "NEW1": 100.0, "NEW2": 110.0, "NEW3": 120.0})
+    gemini = FakeGemini(default=_committee_json("hold", 0.5))
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["NEW1", "NEW2", "NEW3"], max_eval=None)
+
+    # MEASURED reduction: without the filter this cycle evaluates 4 symbols (3
+    # non-held candidates + 1 held) => 4 Gemini calls. With the filter, only the
+    # held symbol is evaluated => 1 call. 3/4 (75%) of the LLM calls this cycle
+    # would have burned on structurally-impossible buys are avoided.
+    assert gemini.calls == 1
+    skipped_symbols = {s["symbol"] for s in result["skipped_no_capacity"]}
+    assert skipped_symbols == {"NEW1", "NEW2", "NEW3"}
+    for entry in result["skipped_no_capacity"]:
+        assert "max new positions per day (3) reached" in entry["reason"]
+    decided_symbols = {d["symbol"] for d in result["decisions"]}
+    assert decided_symbols == {"HELD"}
+    all_orders = []
+    for status in STATUSES:
+        all_orders.extend(get_orders_by_status(session, status))
+    assert not any(o.symbol in {"NEW1", "NEW2", "NEW3"} for o in all_orders)
+
+
+def test_held_symbol_never_skipped_at_zero_capacity_and_can_still_sell(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    as_of = et_trading_day(NOW_UTC)
+    _seed_counted_buys(session, as_of, ["X1", "X2", "X3"])  # capacity exhausted
+    set_position(session, "HELD", 10, 90.0)
+    provider = FakeProvider({"HELD": 90.0})
+    gemini = FakeGemini(by_symbol={"HELD": _committee_json("sell", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["HELD"], max_eval=None)
+
+    assert result["skipped_no_capacity"] == []  # held: capacity is irrelevant to a sell
+    held_decision = next(d for d in result["decisions"] if d["symbol"] == "HELD")
+    assert held_decision["action"] == "sell"
+    assert held_decision["submit_result"]["order"]["status"] == STATUS_SUBMITTED
+    assert "HELD" not in get_positions(session)
+
+
+def test_capacity_available_skips_nothing(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    provider = FakeProvider({"NEW1": 100.0, "NEW2": 110.0})
+    gemini = FakeGemini(default=_committee_json("hold", 0.5))
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["NEW1", "NEW2"], max_eval=None)
+
+    assert result["skipped_no_capacity"] == []
+    assert gemini.calls == 2
+    assert {d["symbol"] for d in result["decisions"]} == {"NEW1", "NEW2"}
+
+
+def test_cooldown_blocked_non_held_symbol_skipped_even_with_capacity(session):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    as_of = et_trading_day(NOW_UTC)
+    last_sell_date = as_of - dt.timedelta(days=2)  # default cooldown_days=5 → still cooling
+    # NOTE: this stray sell fill (no matching buy) also makes
+    # reflect_on_closed_trades emit an *unrelated* extra LLM call for its
+    # post-mortem lesson after the loop (pre-existing reflection behavior,
+    # nothing to do with the capacity filter) — so we assert on the captured
+    # committee PROMPTS (never contains COOLED's briefing) rather than the
+    # raw call count, to keep this test's proof of "no LLM call for COOLED"
+    # free of that confound.
+    add_fill(session, 999, last_sell_date, "COOLED", "sell", 10, 50.0)
+    provider = FakeProvider({"COOLED": 55.0, "FRESH": 100.0})
+    gemini = CapturingGemini(default=_committee_json("hold", 0.5))
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["COOLED", "FRESH"], max_eval=None)
+
+    skipped = {s["symbol"]: s["reason"] for s in result["skipped_no_capacity"]}
+    assert set(skipped) == {"COOLED"}
+    assert skipped["COOLED"] == f"cooldown: sold on {last_sell_date}, 5-day cooldown active"
+    assert {d["symbol"] for d in result["decisions"]} == {"FRESH"}
+    # exclude the unrelated post-mortem "lesson" prompt (fired for the stray
+    # COOLED sell fill by reflect_on_closed_trades, see NOTE above) — it also
+    # happens to json.dumps a "symbol" field, which would otherwise confound
+    # a plain substring check.
+    committee_prompts = [p for p in gemini.prompts if "已平仓模拟股票交易" not in p]
+    assert committee_prompts, "expected at least one real committee prompt (FRESH)"
+    assert not any('"symbol": "COOLED"' in p for p in committee_prompts)
+    assert any('"symbol": "FRESH"' in p for p in committee_prompts)
+
+
+def test_capacity_prefilter_read_failure_degrades_to_evaluating_everything(session, monkeypatch):
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    as_of = et_trading_day(NOW_UTC)
+    _seed_counted_buys(session, as_of, ["X1", "X2", "X3"])  # would otherwise exhaust capacity
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom: repo unavailable")
+
+    monkeypatch.setattr("app.services.trade_cycle_service.buy_symbols_today", _raise)
+
+    provider = FakeProvider({"NEW1": 100.0})
+    gemini = FakeGemini(default=_committee_json("hold", 0.5))
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["NEW1"], max_eval=None)
+
+    # fail-safe: pre-check blew up → skip nothing, evaluate everything (today's behavior)
+    assert result["skipped_no_capacity"] == []
+    assert gemini.calls == 1
+    assert result["decisions"][0]["symbol"] == "NEW1"
