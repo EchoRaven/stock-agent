@@ -451,6 +451,9 @@ export default function HistoryPage() {
                         ) : (
                           <span className="text-slate-500">{signal.note}</span>
                         )}
+                        <span className="ml-1 text-slate-400">
+                          ({signal.n} 条买入 / {signal.distinct_days} 个决策日)
+                        </span>
                       </p>
                     </>
                   )}

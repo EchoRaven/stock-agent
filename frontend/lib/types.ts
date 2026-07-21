@@ -380,9 +380,16 @@ export interface ForwardReturnConfidenceBucket {
 
 export interface ForwardReturnSignal {
   n: number;
+  /**
+   * Distinct decision days the matured buys span. Row count alone is not
+   * enough — buys made on the same day all ride that day's market move, so
+   * they are not independent observations. Both gates must pass before
+   * `verdict`/`pearson_r` are populated.
+   */
+  distinct_days: number;
   pearson_r: number | null;
   verdict: string | null;
-  /** Present only when no conclusion was drawn (sample too small / no variance). */
+  /** Present only when no conclusion was drawn (which gate failed / no variance). */
   note?: string;
 }
 

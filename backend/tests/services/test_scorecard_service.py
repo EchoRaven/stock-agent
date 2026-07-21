@@ -9,7 +9,8 @@ import pandas as pd
 import pytest
 
 from app.data.base import PriceProvider, empty_bars
-from app.services.scorecard_service import MIN_SIGNAL_N, build_forward_returns, build_scorecard
+from app.services.scorecard_service import (MIN_SIGNAL_DAYS, MIN_SIGNAL_N,
+                                            build_forward_returns, build_scorecard)
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import save_decision
 from app.store.repos.order_repo import create_order
@@ -394,20 +395,29 @@ def test_forward_returns_confidence_signal_below_min_n_no_conclusion(session):
     assert "20" in signal["note"]
 
 
+def _spread_over_days_bars(day_idx: int, ret: float) -> pd.DataFrame:
+    """一条决策的行情:as_of 落在 FR_DATES[day_idx](收 100),下一根 bar 收
+    100+ret —— 于是 1 日 horizon 的收益恰好等于 ret%,且决策可以散布在不同日子。"""
+    closes = [100.0] * len(FR_DATES)
+    closes[day_idx + 1] = 100.0 + ret
+    return _bars(closes)
+
+
 def test_forward_returns_confidence_signal_correlated_synthetic_buys(session):
     # perfectly linear confidence -> return relation: return_i = 2*i, confidence_i = 0.5+0.01*i.
     # entry fixed at 100, so exit = 100 + return_i reproduces return_i exactly.
-    assert MIN_SIGNAL_N == 20
+    # Spread across MIN_SIGNAL_DAYS distinct decision days so the day gate passes
+    # and this test keeps exercising the correlation math itself.
+    assert MIN_SIGNAL_N == 20 and MIN_SIGNAL_DAYS == 5
     n = MIN_SIGNAL_N
     bars_map = {}
     for i in range(n):
         confidence = round(0.5 + 0.01 * i, 3)
         ret = 2 * i  # 0, 2, 4, ..., 38
-        exit_close = 100 + ret
-        save_decision(session, FR_AS_OF, f"SIG{i}", "buy", confidence, "advisory", "{}")
-        bars_map[f"SIG{i}"] = _bars(
-            [100, 100, 100, 100, 100, exit_close, exit_close, exit_close, exit_close]
-        )
+        day_idx = i % MIN_SIGNAL_DAYS  # FR_DATES[0..4]
+        save_decision(session, dt.date.fromisoformat(FR_DATES[day_idx]), f"SIG{i}",
+                      "buy", confidence, "advisory", "{}")
+        bars_map[f"SIG{i}"] = _spread_over_days_bars(day_idx, ret)
     session.commit()
 
     provider = FixedBarsProvider(bars_map=bars_map)
@@ -415,6 +425,7 @@ def test_forward_returns_confidence_signal_correlated_synthetic_buys(session):
 
     signal = result["by_horizon"]["1"]["confidence_signal"]
     assert signal["n"] == n
+    assert signal["distinct_days"] == MIN_SIGNAL_DAYS
     # a perfectly linear confidence/return relationship has r == +1.0 exactly.
     assert signal["pearson_r"] == pytest.approx(1.0)
     assert signal["pearson_r"] > 0.5
@@ -422,17 +433,43 @@ def test_forward_returns_confidence_signal_correlated_synthetic_buys(session):
     assert "note" not in signal
 
 
+def test_forward_returns_confidence_signal_same_day_pile_refuses_conclusion(session):
+    """条数够但全来自同一天 → 拒绝下结论。
+
+    同一天的 N 只标的一起随大盘涨跌,是 1 个观测不是 N 个;只数条数的门控会把
+    "那天大盘涨了"误读成"置信度有效"。这正是 2026-07-21 真实数据踩到的坑
+    (36 条同天买入产出 r=0.112 并被当成结论输出)。
+    """
+    n = MIN_SIGNAL_N + 16  # 36 条,远超条数门槛
+    bars_map = {}
+    for i in range(n):
+        confidence = round(0.5 + 0.01 * i, 3)
+        save_decision(session, FR_AS_OF, f"SAMEDAY{i}", "buy", confidence, "advisory", "{}")
+        bars_map[f"SAMEDAY{i}"] = _spread_over_days_bars(4, 2 * i)  # idx4 == FR_AS_OF
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map=bars_map)
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["n"] == n  # 条数够
+    assert signal["distinct_days"] == 1  # 但只有一天
+    assert signal["pearson_r"] is None  # 即便相关性完美也不给数
+    assert signal["verdict"] is None
+    assert f"≥{MIN_SIGNAL_DAYS} 天" in signal["note"]
+
+
 def test_forward_returns_confidence_signal_zero_variance_no_conclusion(session):
-    # >= MIN_SIGNAL_N matured buys but every confidence is identical -> undefined
-    # correlation, must not be fabricated as 0 or crash.
+    # >= MIN_SIGNAL_N matured buys spanning enough days (so the day gate passes)
+    # but every confidence is identical -> undefined correlation, must not be
+    # fabricated as 0 or crash.
     n = MIN_SIGNAL_N + 5
     bars_map = {}
     for i in range(n):
-        save_decision(session, FR_AS_OF, f"FLATSIG{i}", "buy", 0.8, "advisory", "{}")
-        exit_close = 100 + i  # returns vary; only confidence is constant
-        bars_map[f"FLATSIG{i}"] = _bars(
-            [100, 100, 100, 100, 100, exit_close, exit_close, exit_close, exit_close]
-        )
+        day_idx = i % MIN_SIGNAL_DAYS
+        save_decision(session, dt.date.fromisoformat(FR_DATES[day_idx]), f"FLATSIG{i}",
+                      "buy", 0.8, "advisory", "{}")
+        bars_map[f"FLATSIG{i}"] = _spread_over_days_bars(day_idx, i)  # returns vary
     session.commit()
 
     provider = FixedBarsProvider(bars_map=bars_map)
@@ -440,9 +477,10 @@ def test_forward_returns_confidence_signal_zero_variance_no_conclusion(session):
 
     signal = result["by_horizon"]["1"]["confidence_signal"]
     assert signal["n"] == n
-    assert signal["pearson_r"] is None
+    assert signal["distinct_days"] == MIN_SIGNAL_DAYS  # 天数门已过
+    assert signal["pearson_r"] is None  # 卡在方差为 0
     assert signal["verdict"] is None
-    assert "note" in signal and signal["note"]
+    assert "没有变化" in signal["note"]
 
 
 def test_forward_returns_empty_db_zeros_and_note_no_crash(session):
@@ -469,7 +507,7 @@ def test_forward_returns_empty_db_zeros_and_note_no_crash(session):
         assert all(b["n"] == 0 and b["mean_return_pct"] is None
                   for b in block["buy_by_confidence"])
         assert block["confidence_signal"] == {
-            "n": 0, "pearson_r": None, "verdict": None,
+            "n": 0, "distinct_days": 0, "pearson_r": None, "verdict": None,
             "note": f"样本不足(需≥{MIN_SIGNAL_N}条已成熟买入决策),暂不下结论",
         }
 

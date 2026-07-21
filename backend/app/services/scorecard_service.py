@@ -19,8 +19,10 @@ build_forward_returns 是这个模块的第二个测量:决策记分卡量的是
 as_of 之后的实际股价接上去,按 action、按置信度分桶,看收益。核心诚实约束:
 `pending`(horizon 还没到期)和 `unpriced`(抓不到行情)绝不能悄悄退化成 0 或
 被当作"已测量但是零收益"——两者都单独计数,从不进入 matured 统计;
-confidence_signal(置信度是否真的预测收益)在 matured 买入样本 >= MIN_SIGNAL_N
-之前不给结论,防止小样本噪声被误读成"信号"。
+confidence_signal(置信度是否真的预测收益)要同时满足 matured 买入样本
+>= MIN_SIGNAL_N **且** 覆盖 >= MIN_SIGNAL_DAYS 个不同决策日才给结论:只数条数
+会被"同一天几十只标的"骗过去(同天标的一起随大盘走,不是独立样本),防止小样本
+或截面相关的噪声被误读成"信号"。
 """
 import bisect
 import datetime as dt
@@ -42,6 +44,14 @@ CONFIDENCE_FLOOR_THRESHOLD = 0.6
 
 # forward-returns knobs
 MIN_SIGNAL_N = 20  # matured BUY decisions needed before confidence_signal draws a conclusion
+# ...and they must span at least this many distinct decision days. Counting rows
+# alone is not enough: N buys made on the SAME day across N symbols all ride that
+# day's market move, so they are cross-sectionally correlated, not N independent
+# observations — a correlation computed off them can look real when it is just
+# "the market went up that day". Real finding from 2026-07-21: 36 matured buys
+# from a single day passed the row-count gate and produced r=0.112, which should
+# never have been reported as a conclusion.
+MIN_SIGNAL_DAYS = 5
 FORWARD_RETURN_LOOKBACK_BUFFER_DAYS = 10  # bar-fetch window pad before min(as_of)
 CONFIDENCE_SIGNAL_POS_THRESHOLD = 0.15
 CONFIDENCE_SIGNAL_NEG_THRESHOLD = -0.15
@@ -246,12 +256,12 @@ def _action_stats(returns: list[float], action: str) -> dict:
     }
 
 
-def _buy_by_confidence(matured_buys: list[tuple[float, float]]) -> list[dict]:
-    """matured_buys: [(confidence, return_pct), ...]. Every HIST_BUCKETS label
-    is always listed (n==0 buckets get None stats), same bucket boundaries as
-    the confidence histogram."""
+def _buy_by_confidence(matured_buys: list[tuple[float, float, dt.date]]) -> list[dict]:
+    """matured_buys: [(confidence, return_pct, as_of), ...]. Every HIST_BUCKETS
+    label is always listed (n==0 buckets get None stats), same bucket boundaries
+    as the confidence histogram."""
     buckets: dict[str, list[float]] = {label: [] for label, _, _ in HIST_BUCKETS}
-    for confidence, ret in matured_buys:
+    for confidence, ret, _as_of in matured_buys:
         for label, lo, hi in HIST_BUCKETS:
             if lo is not None and confidence < lo:
                 continue
@@ -297,23 +307,39 @@ def _signal_verdict(r: float) -> str:
     return f"≈无关(r={r})——置信度目前不带信息"
 
 
-def _confidence_signal(matured_buys: list[tuple[float, float]]) -> dict:
+def _confidence_signal(matured_buys: list[tuple[float, float, dt.date]]) -> dict:
+    """置信度到底预不预测收益 —— 两道门都过了才下结论。
+
+    门① 条数 >= MIN_SIGNAL_N;门② 覆盖的**不同决策日** >= MIN_SIGNAL_DAYS。
+    只看条数会被"同一天几十只标的"骗:那天大盘涨,几乎所有标的都涨,几十个
+    "样本"其实是一个观测。两道门任一不过 → pearson_r/verdict 都是 None + note
+    说明为什么不下结论(而不是给一个看起来像结论的数)。
+    """
     n = len(matured_buys)
+    distinct_days = len({as_of for _, _, as_of in matured_buys})
+    base = {"n": n, "distinct_days": distinct_days}
     if n < MIN_SIGNAL_N:
         return {
-            "n": n, "pearson_r": None, "verdict": None,
+            **base, "pearson_r": None, "verdict": None,
             "note": f"样本不足(需≥{MIN_SIGNAL_N}条已成熟买入决策),暂不下结论",
         }
-    confidences = [c for c, _ in matured_buys]
-    returns = [r for _, r in matured_buys]
+    if distinct_days < MIN_SIGNAL_DAYS:
+        return {
+            **base, "pearson_r": None, "verdict": None,
+            "note": (f"决策只覆盖 {distinct_days} 个交易日(需≥{MIN_SIGNAL_DAYS} 天):"
+                     f"同一天的多只标的会一起随大盘涨跌,不是相互独立的样本,"
+                     f"条数再多也不能据此判断置信度是否有效"),
+        }
+    confidences = [c for c, _, _ in matured_buys]
+    returns = [r for _, r, _ in matured_buys]
     r = _pearson_r(confidences, returns)
     if r is None:
         return {
-            "n": n, "pearson_r": None, "verdict": None,
+            **base, "pearson_r": None, "verdict": None,
             "note": "置信度或收益在样本内没有变化,无法计算相关系数",
         }
     r3 = _round3(r)
-    return {"n": n, "pearson_r": r3, "verdict": _signal_verdict(r3)}
+    return {**base, "pearson_r": r3, "verdict": _signal_verdict(r3)}
 
 
 def _build_forward_returns_note(total: int, distinct_days: int,
@@ -357,8 +383,10 @@ def build_forward_returns(session: Session, price_provider,
 
     confidence_signal (does higher confidence actually predict better
     returns?) only draws a conclusion once matured BUY n >= MIN_SIGNAL_N
-    (20); below that it returns pearson_r=None with a "样本不足" note so a
-    handful of noisy decisions can't masquerade as a calibration signal.
+    (20) AND those buys span >= MIN_SIGNAL_DAYS (5) distinct decision days;
+    otherwise it returns pearson_r=None with a note explaining which gate
+    failed, so neither a handful of noisy decisions nor a pile of same-day
+    (cross-sectionally correlated) ones can masquerade as a calibration signal.
 
     Never raises on an empty DB or a price provider that fails/returns
     nothing for every symbol.
@@ -394,7 +422,7 @@ def build_forward_returns(session: Session, price_provider,
     for h in horizons:
         matured = pending = unpriced = 0
         returns_by_action: dict[str, list[float]] = {a: [] for a in ACTIONS}
-        matured_buys: list[tuple[float, float]] = []
+        matured_buys: list[tuple[float, float, dt.date]] = []
 
         for row in rows:
             entry = entries.get(row.id)
@@ -412,7 +440,7 @@ def build_forward_returns(session: Session, price_provider,
             if row.action in returns_by_action:
                 returns_by_action[row.action].append(ret)
             if row.action == "buy":
-                matured_buys.append((row.confidence, ret))
+                matured_buys.append((row.confidence, ret, row.as_of))
 
         by_horizon[str(h)] = {
             "coverage": {"matured": matured, "pending": pending, "unpriced": unpriced},
