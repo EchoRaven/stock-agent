@@ -28,12 +28,12 @@ KNOWN BIASES — read before trusting any number this prints:
     gap today, so this particular difference is currently nil.
   * One recent window is one market regime. Even a clean result here is weak
     evidence about behaviour in other regimes.
-  * SELL IS STRUCTURALLY UNTESTABLE HERE. The eval DB holds no positions, so
-    every call passes held=False, and committee_service._clamp_action rewrites
-    any "sell" to "hold". A `no_sells` flag on a replay scorecard is therefore an
-    artifact of this harness, NOT evidence the committee won't sell — and some
-    "hold" rows may be clamped sells. Judging sell behaviour needs a replay that
-    seeds positions first.
+  * SELL IS UNTESTABLE WITHOUT --hold. With no held symbols every call passes
+    held=False and committee_service._clamp_action rewrites any "sell" to "hold",
+    so a `no_sells` flag on such a run is an artifact of this harness, NOT
+    evidence the committee won't sell — and some "hold" rows are clamped sells.
+    Pass --hold SYM1,SYM2 to evaluate those symbols as held (they are then scored
+    every day even when they miss the screen top-k, mirroring the live cycle).
   * Fail-safe rows (LLM unavailable/invalid -> hold with confidence 0.0) land in
     the same table as real verdicts and will drag the hold rate up and the mean
     confidence down. Count `confidence <= 0.05` before comparing two runs.
@@ -48,6 +48,7 @@ symbol-date, so --dates 10 --top-k 5 costs 50 calls.
 Usage:
     uv run python -m scripts.replay_eval --dry-run          # plan only, no LLM calls
     uv run python -m scripts.replay_eval --dates 10 --top-k 5
+    uv run python -m scripts.replay_eval --dates 10 --hold AAPL,JPM   # test sell too
     uv run python -m scripts.replay_eval --report-only      # re-score existing eval DB
 """
 
@@ -88,9 +89,16 @@ def _weekdays_back(end: dt.date, count: int) -> list:
     return sorted(out)
 
 
-def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days, verbose=True):
+def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days,
+                     held_symbols=frozenset(), verbose=True):
     """一个交易日:screen -> 逐标的 briefing+committee -> 存 mode=replay 决策。
-    返回本日新增决策数。已有该日决策则跳过(可断点续跑,不重复烧 LLM)。"""
+    返回本日新增决策数。已有该日决策则跳过(可断点续跑,不重复烧 LLM)。
+
+    held_symbols 里的标的按"已持有"评估(held=True),并且**即使没进 screen 前
+    top_k 也照样评**——与线上 cycle 的 _eval_symbols 语义一致(持仓必须每轮都
+    有机会被卖掉)。没有持仓时 sell 在 _clamp_action 里会被改写成 hold,那样
+    整个卖出行为根本无法测量(见文件头 KNOWN BIASES)。
+    """
     price_provider, news_provider, funds_provider = providers
 
     if get_decisions(session, as_of):
@@ -101,7 +109,10 @@ def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days, ve
     start = as_of - dt.timedelta(days=lookback_days)
     bars, _skipped = fetch_bars(price_provider, DEFAULT_UNIVERSE, start, as_of)
     scores = run_screen_on_bars(bars, top_k)
-    if not scores:
+    candidates = [s.symbol for s in scores]
+    # 持仓补在候选后面(去重),保证每个持仓每天都被评估一次
+    eval_symbols = candidates + [s for s in sorted(held_symbols) if s not in candidates]
+    if not eval_symbols:
         print(f"  {as_of}  screen 无候选(行情不足),跳过")
         return 0
 
@@ -113,21 +124,21 @@ def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days, ve
         market_context = ""
 
     written = 0
-    for score in scores:
-        symbol = score.symbol
+    for symbol in eval_symbols:
+        held = symbol in held_symbols
         try:
             briefing = get_stock_briefing(symbol, price_provider, news_provider,
                                           funds_provider, as_of)
-            # held=False:eval 库里没有持仓;memory_context 留空(见文件头偏差说明)。
-            committee = run_committee(gemini, briefing, held=False,
+            # memory_context 留空(见文件头偏差说明)。
+            committee = run_committee(gemini, briefing, held=held,
                                       market_context=market_context)
             save_decision(session, as_of, symbol, committee["action"],
                           committee["confidence"], REPLAY_MODE,
                           json.dumps(committee, ensure_ascii=False))
             written += 1
             if verbose:
-                print(f"  {as_of}  {symbol:6s} {committee['action']:5s} "
-                      f"conf={committee['confidence']:.2f}")
+                print(f"  {as_of}  {symbol:6s} {'HELD' if held else '    '} "
+                      f"{committee['action']:5s} conf={committee['confidence']:.2f}")
         except Exception as exc:  # noqa: BLE001 - 单只失败不该中断整轮回放
             print(f"  {as_of}  {symbol:6s} FAILED: {exc}")
     session.commit()
@@ -203,6 +214,9 @@ def main(argv=None) -> int:
                         help="最近一个回放日距今多少天(默认 8,让 5 日 horizon 有机会成熟)")
     parser.add_argument("--horizons", default="1,5",
                         help="前瞻收益 horizon,逗号分隔(默认 1,5)")
+    parser.add_argument("--hold", default="",
+                        help="逗号分隔的标的,按已持有评估(held=True)。不给的话 sell "
+                             "会被 _clamp_action 改写成 hold,卖出行为完全测不到")
     parser.add_argument("--db", default=DEFAULT_DB,
                         help=f"独立评测库路径(默认 {DEFAULT_DB});绝不写线上库")
     parser.add_argument("--dry-run", action="store_true",
@@ -214,12 +228,18 @@ def main(argv=None) -> int:
     horizons = [int(x) for x in args.horizons.split(",") if x.strip().isdigit()] or [1, 5]
     end = dt.date.today() - dt.timedelta(days=args.end_days_ago)
     dates = _weekdays_back(end, args.dates)
+    held_symbols = frozenset(s.strip().upper() for s in args.hold.split(",") if s.strip())
 
     if args.dry_run:
+        per_day = args.top_k + len(held_symbols)  # 持仓即使没进 top_k 也评
         print(f"计划回放 {len(dates)} 个交易日: {dates[0]} .. {dates[-1]}")
-        print(f"每日 top-{args.top_k} → 最多 {len(dates) * args.top_k} 次 Gemini 调用")
+        print(f"每日 top-{args.top_k}"
+              + (f" + 持仓 {sorted(held_symbols)}" if held_symbols else "")
+              + f" → 最多 {len(dates) * per_day} 次 Gemini 调用")
         print(f"写入独立库: {args.db}(线上 stockagent.db 不受影响)")
         print(f"前瞻 horizon: {horizons}")
+        if not held_symbols:
+            print("⚠ 未指定 --hold:sell 会被改写成 hold,卖出行为测不到")
         return 0
 
     settings = get_settings()
@@ -237,11 +257,14 @@ def main(argv=None) -> int:
     with make_session_factory(engine)() as session:
         if not args.report_only:
             print(f"回放 {len(dates)} 个交易日到独立库 {args.db} "
-                  f"(线上库不受影响),每日 top-{args.top_k}:")
+                  f"(线上库不受影响),每日 top-{args.top_k}"
+                  + (f",持仓 {sorted(held_symbols)} 按 held=True 评估" if held_symbols
+                     else ",无持仓(sell 测不到)") + ":")
             total = 0
             for as_of in dates:
                 total += _replay_one_date(session, as_of, providers, gemini,
-                                          args.top_k, settings.lookback_days)
+                                          args.top_k, settings.lookback_days,
+                                          held_symbols=held_symbols)
             print(f"\n新增 {total} 条 mode={REPLAY_MODE} 决策")
         _print_report(session, price_provider, horizons)
     return 0
