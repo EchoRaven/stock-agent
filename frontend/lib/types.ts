@@ -348,6 +348,66 @@ export interface Scorecard {
   flags: ScorecardFlag[];
 }
 
+/**
+ * Forward returns — did the committee's decisions actually pay off?
+ *
+ * `pending` (horizon not elapsed yet) and `unpriced` (no bars for the symbol)
+ * are tracked separately from `matured` and their stats come back as `null`,
+ * never 0 — "not known yet" must never be rendered as "measured to be zero".
+ */
+export interface ForwardReturnCoverage {
+  matured: number;
+  pending: number;
+  unpriced: number;
+}
+
+export interface ForwardReturnActionStats {
+  n: number;
+  /** Percentage-point value, e.g. 1.5 == +1.5%. null when n === 0. */
+  mean_return_pct: number | null;
+  median_return_pct: number | null;
+  /** buy: fraction that rose; sell: fraction that fell; hold: always null. */
+  hit_rate: number | null;
+  hit_rate_meaning: string;
+}
+
+export interface ForwardReturnConfidenceBucket {
+  bucket: string;
+  n: number;
+  mean_return_pct: number | null;
+  hit_rate: number | null;
+}
+
+export interface ForwardReturnSignal {
+  n: number;
+  pearson_r: number | null;
+  verdict: string | null;
+  /** Present only when no conclusion was drawn (sample too small / no variance). */
+  note?: string;
+}
+
+export interface ForwardReturnHorizon {
+  coverage: ForwardReturnCoverage;
+  by_action: {
+    buy: ForwardReturnActionStats;
+    sell: ForwardReturnActionStats;
+    hold: ForwardReturnActionStats;
+  };
+  buy_by_confidence: ForwardReturnConfidenceBucket[];
+  confidence_signal: ForwardReturnSignal;
+}
+
+export interface ForwardReturns {
+  total_decisions: number;
+  distinct_symbols: number;
+  as_of_from: string | null;
+  as_of_to: string | null;
+  horizons: number[];
+  /** Keyed by horizon as a string, e.g. "1" | "5" | "20". */
+  by_horizon: Record<string, ForwardReturnHorizon>;
+  note: string;
+}
+
 export type CommitteeRoleKey = "technical" | "fundamental" | "sentiment" | "bear";
 
 export interface Pick {

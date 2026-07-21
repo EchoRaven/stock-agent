@@ -5,9 +5,11 @@ build_scorecard(不经 HTTP 层);路由层行为在 tests/api/test_history.py �
 import datetime as dt
 import statistics
 
+import pandas as pd
 import pytest
 
-from app.services.scorecard_service import build_scorecard
+from app.data.base import PriceProvider, empty_bars
+from app.services.scorecard_service import MIN_SIGNAL_N, build_forward_returns, build_scorecard
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import save_decision
 from app.store.repos.order_repo import create_order
@@ -211,3 +213,283 @@ def test_gate_counts_orders_by_status_zero_filled(session):
         "filled": 2,
         "cancelled": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# forward returns — do the decisions pay off? (offline fake price provider,
+# deterministic bars, hand-computed expected returns)
+# ---------------------------------------------------------------------------
+
+FR_AS_OF = dt.date(2026, 7, 1)
+# 9 sequential bars; index 4 == FR_AS_OF (2026-06-25 .. 2026-07-07).
+FR_DATES = ["2026-06-25", "2026-06-26", "2026-06-29", "2026-06-30", "2026-07-01",
+           "2026-07-02", "2026-07-03", "2026-07-06", "2026-07-07"]
+FR_NOW_UTC = dt.datetime(2026, 7, 8, 16, 0, tzinfo=dt.UTC)
+
+
+def _bars(closes: list[float]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in FR_DATES])
+    return pd.DataFrame(
+        {"open": closes, "high": closes, "low": closes, "close": closes,
+         "volume": [1_000_000.0] * len(closes)},
+        index=idx,
+    )
+
+
+class FixedBarsProvider(PriceProvider):
+    """离线测试行情源:每个 symbol 固定一段收盘价序列(9 根 bar,idx4==FR_AS_OF);
+    fail/empty 集合模拟抓取异常/空数据,验证逐 symbol 隔离不互相影响。"""
+
+    def __init__(self, bars_map: dict | None = None,
+                fail: set | None = None, empty: set | None = None):
+        self._map = bars_map or {}
+        self._fail = fail or set()
+        self._empty = empty or set()
+
+    def get_daily_bars(self, symbol, start, end):
+        if symbol in self._fail:
+            raise RuntimeError("boom")
+        if symbol in self._empty:
+            return empty_bars()
+        return self._map.get(symbol, empty_bars())
+
+
+def test_forward_returns_matured_buys_rose_exact_stats(session):
+    # entry = idx4 (FR_AS_OF), h=1 exit = idx5.
+    # BUY_A: 104 -> 105 => +0.9615384615...% -> round3 0.962
+    # BUY_B: 58  -> 60  => +3.4482758620...% -> round3 3.448
+    save_decision(session, FR_AS_OF, "BUY_A", "buy", 0.8, "advisory", "{}")
+    save_decision(session, FR_AS_OF, "BUY_B", "buy", 0.8, "advisory", "{}")
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map={
+        "BUY_A": _bars([100, 101, 102, 103, 104, 105, 106, 107, 108]),
+        "BUY_B": _bars([50, 52, 54, 56, 58, 60, 62, 64, 66]),
+    })
+
+    result = build_forward_returns(session, provider, horizons=(1, 5, 20), now_utc=FR_NOW_UTC)
+
+    h1 = result["by_horizon"]["1"]
+    assert h1["coverage"] == {"matured": 2, "pending": 0, "unpriced": 0}
+    buy = h1["by_action"]["buy"]
+    assert buy["n"] == 2
+    assert buy["mean_return_pct"] == pytest.approx(2.205)
+    assert buy["median_return_pct"] == pytest.approx(2.205)
+    assert buy["hit_rate"] == 1.0
+    assert buy["hit_rate_meaning"] == "涨了算对"
+    # sell/hold present with all-None stats (no such decisions this horizon)
+    assert h1["by_action"]["sell"]["n"] == 0
+    assert h1["by_action"]["sell"]["mean_return_pct"] is None
+    assert h1["by_action"]["hold"]["n"] == 0
+
+    # too few bars remain after entry for h=5/h=20 -> pending, NOT matured/zero
+    for h_key in ("5", "20"):
+        block = result["by_horizon"][h_key]
+        assert block["coverage"] == {"matured": 0, "pending": 2, "unpriced": 0}
+        assert block["by_action"]["buy"] == {
+            "n": 0, "mean_return_pct": None, "median_return_pct": None,
+            "hit_rate": None, "hit_rate_meaning": "涨了算对",
+        }
+
+
+def test_forward_returns_sell_hit_rate_when_price_fell(session):
+    # entry idx4=104 -> exit idx5=103 => -0.9615384615...% -> round3 -0.962 (<0 -> sell "right")
+    save_decision(session, FR_AS_OF, "SELL_A", "sell", 0.7, "advisory", "{}")
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map={
+        "SELL_A": _bars([108, 107, 106, 105, 104, 103, 102, 101, 100]),
+    })
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    sell = result["by_horizon"]["1"]["by_action"]["sell"]
+    assert sell["n"] == 1
+    assert sell["mean_return_pct"] == pytest.approx(-0.962)
+    assert sell["hit_rate"] == 1.0
+    assert sell["hit_rate_meaning"] == "跌了算对,即避开了损失"
+
+
+def test_forward_returns_hold_never_reports_hit_rate(session):
+    save_decision(session, FR_AS_OF, "HOLD_A", "hold", 0.6, "advisory", "{}")
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map={
+        "HOLD_A": _bars([100, 101, 102, 103, 104, 105, 106, 107, 108]),
+    })
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    hold = result["by_horizon"]["1"]["by_action"]["hold"]
+    assert hold["n"] == 1
+    assert hold["mean_return_pct"] == pytest.approx(0.962)
+    assert hold["hit_rate"] is None  # hold makes no directional claim
+    assert hold["hit_rate_meaning"] == "不作方向性判断,不计 hit_rate"
+
+
+def test_forward_returns_unpriced_symbol_isolated_no_crash(session):
+    save_decision(session, FR_AS_OF, "BUY_A", "buy", 0.8, "advisory", "{}")
+    save_decision(session, FR_AS_OF, "FAIL_SYM", "buy", 0.8, "advisory", "{}")
+    save_decision(session, FR_AS_OF, "EMPTY_SYM", "buy", 0.8, "advisory", "{}")
+    session.commit()
+
+    provider = FixedBarsProvider(
+        bars_map={"BUY_A": _bars([100, 101, 102, 103, 104, 105, 106, 107, 108])},
+        fail={"FAIL_SYM"}, empty={"EMPTY_SYM"},
+    )
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    h1 = result["by_horizon"]["1"]
+    assert h1["coverage"] == {"matured": 1, "pending": 0, "unpriced": 2}
+    assert h1["by_action"]["buy"]["n"] == 1
+    assert h1["by_action"]["buy"]["mean_return_pct"] == pytest.approx(0.962)
+
+
+def test_forward_returns_buy_by_confidence_buckets_and_lists_empty_buckets(session):
+    # entry idx4=100 always; exit idx5 chosen for a clean round return.
+    save_decision(session, FR_AS_OF, "C_LOW", "buy", 0.45, "advisory", "{}")   # <0.5
+    save_decision(session, FR_AS_OF, "C_MID", "buy", 0.75, "advisory", "{}")  # 0.7-0.8
+    save_decision(session, FR_AS_OF, "C_HIGH", "buy", 0.95, "advisory", "{}")  # 0.9-1.0
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map={
+        "C_LOW": _bars([100, 100, 100, 100, 100, 101, 101, 101, 101]),   # +1.0%
+        "C_MID": _bars([100, 100, 100, 100, 100, 104, 104, 104, 104]),   # +4.0%
+        "C_HIGH": _bars([100, 100, 100, 100, 100, 106, 106, 106, 106]),  # +6.0%
+    })
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    buckets = {b["bucket"]: b for b in result["by_horizon"]["1"]["buy_by_confidence"]}
+    assert buckets["<0.5"] == {"bucket": "<0.5", "n": 1, "mean_return_pct": 1.0, "hit_rate": 1.0}
+    assert buckets["0.7–0.8"] == {"bucket": "0.7–0.8", "n": 1, "mean_return_pct": 4.0, "hit_rate": 1.0}
+    assert buckets["0.9–1.0"] == {"bucket": "0.9–1.0", "n": 1, "mean_return_pct": 6.0, "hit_rate": 1.0}
+    # untouched buckets still listed (never dropped), stats None not 0
+    for empty_label in ("0.5–0.6", "0.6–0.7", "0.8–0.9"):
+        assert buckets[empty_label] == {
+            "bucket": empty_label, "n": 0, "mean_return_pct": None, "hit_rate": None,
+        }
+    assert [b["bucket"] for b in result["by_horizon"]["1"]["buy_by_confidence"]] == [
+        "<0.5", "0.5–0.6", "0.6–0.7", "0.7–0.8", "0.8–0.9", "0.9–1.0",
+    ]
+
+
+def test_forward_returns_confidence_signal_below_min_n_no_conclusion(session):
+    for i in range(5):  # well under MIN_SIGNAL_N (20)
+        save_decision(session, FR_AS_OF, f"SIG{i}", "buy", 0.5 + i * 0.05, "advisory", "{}")
+    session.commit()
+
+    bars_map = {f"SIG{i}": _bars([100, 100, 100, 100, 100, 101 + i, 101 + i, 101 + i, 101 + i])
+               for i in range(5)}
+    provider = FixedBarsProvider(bars_map=bars_map)
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["n"] == 5
+    assert signal["pearson_r"] is None
+    assert signal["verdict"] is None
+    assert "样本不足" in signal["note"]
+    assert "20" in signal["note"]
+
+
+def test_forward_returns_confidence_signal_correlated_synthetic_buys(session):
+    # perfectly linear confidence -> return relation: return_i = 2*i, confidence_i = 0.5+0.01*i.
+    # entry fixed at 100, so exit = 100 + return_i reproduces return_i exactly.
+    assert MIN_SIGNAL_N == 20
+    n = MIN_SIGNAL_N
+    bars_map = {}
+    for i in range(n):
+        confidence = round(0.5 + 0.01 * i, 3)
+        ret = 2 * i  # 0, 2, 4, ..., 38
+        exit_close = 100 + ret
+        save_decision(session, FR_AS_OF, f"SIG{i}", "buy", confidence, "advisory", "{}")
+        bars_map[f"SIG{i}"] = _bars(
+            [100, 100, 100, 100, 100, exit_close, exit_close, exit_close, exit_close]
+        )
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map=bars_map)
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["n"] == n
+    # a perfectly linear confidence/return relationship has r == +1.0 exactly.
+    assert signal["pearson_r"] == pytest.approx(1.0)
+    assert signal["pearson_r"] > 0.5
+    assert "正相关" in signal["verdict"]
+    assert "note" not in signal
+
+
+def test_forward_returns_confidence_signal_zero_variance_no_conclusion(session):
+    # >= MIN_SIGNAL_N matured buys but every confidence is identical -> undefined
+    # correlation, must not be fabricated as 0 or crash.
+    n = MIN_SIGNAL_N + 5
+    bars_map = {}
+    for i in range(n):
+        save_decision(session, FR_AS_OF, f"FLATSIG{i}", "buy", 0.8, "advisory", "{}")
+        exit_close = 100 + i  # returns vary; only confidence is constant
+        bars_map[f"FLATSIG{i}"] = _bars(
+            [100, 100, 100, 100, 100, exit_close, exit_close, exit_close, exit_close]
+        )
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map=bars_map)
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    signal = result["by_horizon"]["1"]["confidence_signal"]
+    assert signal["n"] == n
+    assert signal["pearson_r"] is None
+    assert signal["verdict"] is None
+    assert "note" in signal and signal["note"]
+
+
+def test_forward_returns_empty_db_zeros_and_note_no_crash(session):
+    provider = FixedBarsProvider()
+
+    result = build_forward_returns(session, provider, horizons=(1, 5, 20), now_utc=FR_NOW_UTC)
+
+    assert result["total_decisions"] == 0
+    assert result["distinct_symbols"] == 0
+    assert result["as_of_from"] is None
+    assert result["as_of_to"] is None
+    assert result["horizons"] == [1, 5, 20]
+    assert "暂无决策数据" in result["note"]
+
+    for h_key in ("1", "5", "20"):
+        block = result["by_horizon"][h_key]
+        assert block["coverage"] == {"matured": 0, "pending": 0, "unpriced": 0}
+        for action in ("buy", "sell", "hold"):
+            stats = block["by_action"][action]
+            assert stats["n"] == 0
+            assert stats["mean_return_pct"] is None
+            assert stats["median_return_pct"] is None
+            assert stats["hit_rate"] is None
+        assert all(b["n"] == 0 and b["mean_return_pct"] is None
+                  for b in block["buy_by_confidence"])
+        assert block["confidence_signal"] == {
+            "n": 0, "pearson_r": None, "verdict": None,
+            "note": f"样本不足(需≥{MIN_SIGNAL_N}条已成熟买入决策),暂不下结论",
+        }
+
+
+def test_forward_returns_days_window_filters_like_scorecard(session):
+    save_decision(session, dt.date(2026, 6, 1), "OLD", "buy", 0.8, "advisory", "{}")
+    save_decision(session, dt.date(2026, 7, 6), "RECENT", "buy", 0.8, "advisory", "{}")
+    session.commit()
+
+    provider = FixedBarsProvider(bars_map={
+        "RECENT": _bars([100, 101, 102, 103, 104, 105, 106, 107, 108]),
+    })
+
+    # FR_NOW_UTC -> ET 2026-07-08; days=5 -> since = 2026-07-03. RECENT (07-06)
+    # is in-window, OLD (06-01) is not.
+    result = build_forward_returns(session, provider, horizons=(1,), days=5, now_utc=FR_NOW_UTC)
+
+    assert result["total_decisions"] == 1
+    assert result["as_of_from"] == "2026-07-06"
+    assert result["as_of_to"] == "2026-07-06"
+
+    result_all = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+    assert result_all["total_decisions"] == 2

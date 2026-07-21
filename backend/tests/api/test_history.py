@@ -192,6 +192,100 @@ def test_scorecard_route_does_not_require_token(unsecured_client):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/decisions/forward-returns
+#
+# 核心性质:未到期(pending)/无行情(unpriced)绝不能被当成"测出来是 0"——
+# 那会把"还不知道"伪装成"已知无效"。confidence_signal 在成熟买入样本
+# < MIN_SIGNAL_N 时必须拒绝下结论。
+# ---------------------------------------------------------------------------
+
+def _seed_recent_decisions(session, n, action="buy", confidence=0.8, days_ago=3):
+    """as_of 取相对今天的日期,让 1 日 horizon 必然已成熟、20 日必然未到期,
+    测试不随真实日期推移而失效(FakeProvider 每个日历日一根 bar)。"""
+    as_of = dt.date.today() - dt.timedelta(days=days_ago)
+    for i in range(n):
+        save_decision(session, as_of, f"SYM{i}", action, confidence, "advisory", "{}")
+    return as_of
+
+
+def test_forward_returns_route_returns_expected_shape(client, session):
+    _seed_recent_decisions(session, 3)
+    session.commit()
+
+    resp = client.get("/api/decisions/forward-returns")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, dict)  # not a list -> 证明没被 /decisions 列表路由吃掉
+    for key in ("total_decisions", "distinct_symbols", "as_of_from", "as_of_to",
+                "horizons", "by_horizon", "note"):
+        assert key in body
+    assert body["total_decisions"] == 3
+    assert body["horizons"] == [1, 5, 20]
+    assert set(body["by_horizon"]) == {"1", "5", "20"}
+    block = body["by_horizon"]["1"]
+    for key in ("coverage", "by_action", "buy_by_confidence", "confidence_signal"):
+        assert key in block
+    assert set(block["by_action"]) == {"buy", "sell", "hold"}
+    assert set(block["coverage"]) == {"matured", "pending", "unpriced"}
+
+
+def test_forward_returns_route_pending_never_reported_as_zero(client, session):
+    """20 日 horizon 未到期 → 记 pending,且统计值为 None(不是 0)。"""
+    _seed_recent_decisions(session, 3)
+    session.commit()
+
+    by_h = client.get("/api/decisions/forward-returns").json()["by_horizon"]
+    assert by_h["1"]["coverage"]["matured"] == 3   # 3 天后有 bar -> 1 日已成熟
+    assert by_h["20"]["coverage"]["pending"] == 3  # 20 日远未到期
+    assert by_h["20"]["coverage"]["matured"] == 0
+    assert by_h["20"]["by_action"]["buy"]["n"] == 0
+    assert by_h["20"]["by_action"]["buy"]["mean_return_pct"] is None  # 不是 0.0
+    assert by_h["20"]["by_action"]["buy"]["hit_rate"] is None
+
+
+def test_forward_returns_route_confidence_signal_gated_below_min_n(client, session):
+    _seed_recent_decisions(session, 3)
+    session.commit()
+
+    block = client.get("/api/decisions/forward-returns").json()["by_horizon"]["1"]
+    signal = block["confidence_signal"]
+    assert signal["pearson_r"] is None
+    assert signal["verdict"] is None
+    assert "样本不足" in signal["note"]
+
+
+def test_forward_returns_route_custom_horizons_param(client, session):
+    _seed_recent_decisions(session, 2)
+    session.commit()
+
+    body = client.get("/api/decisions/forward-returns", params={"horizons": "1,3"}).json()
+    assert body["horizons"] == [1, 3]
+    assert set(body["by_horizon"]) == {"1", "3"}
+
+
+def test_forward_returns_route_bad_horizons_param_falls_back_to_defaults(client, session):
+    _seed_recent_decisions(session, 2)
+    session.commit()
+
+    resp = client.get("/api/decisions/forward-returns", params={"horizons": "abc,-5,0"})
+    assert resp.status_code == 200
+    assert resp.json()["horizons"] == [1, 5, 20]
+
+
+def test_forward_returns_route_empty_db_returns_200_no_crash(client, session):
+    resp = client.get("/api/decisions/forward-returns")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_decisions"] == 0
+    assert body["by_horizon"]["1"]["coverage"] == {"matured": 0, "pending": 0, "unpriced": 0}
+    assert body["note"]
+
+
+def test_forward_returns_route_does_not_require_token(unsecured_client):
+    assert unsecured_client.get("/api/decisions/forward-returns").status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # GET /api/performance
 # ---------------------------------------------------------------------------
 

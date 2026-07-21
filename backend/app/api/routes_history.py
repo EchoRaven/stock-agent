@@ -1,16 +1,21 @@
-"""GET /api/decisions + GET /api/decisions/scorecard + GET /api/performance ——
-只读:决策历史浏览 + 决策记分卡(委员会推荐是否有区分度) + 从 trade_review
-复盘条目聚合出的业绩战绩单(这是判断委员会长期是否靠谱的起点)。
+"""GET /api/decisions + GET /api/decisions/scorecard + GET /api/decisions/forward-returns
++ GET /api/performance —— 只读:决策历史浏览 + 决策记分卡(委员会推荐是否有
+区分度) + 前瞻收益记分卡(这些推荐到底对不对) + 从 trade_review 复盘条目
+聚合出的业绩战绩单(这是判断委员会长期是否靠谱的起点)。
 
 只读约定(与 /api/dashboard、/api/memory 一致):GET 不设 token 门禁,不写库
 (不调用 session.commit()),不发起任何网络请求——/api/performance 的权益
 用持仓 avg_cost 近似(与 /api/dashboard 同一约定),不取实时行情,因此不含
-未实现的盯市盈亏(mark-to-market)。/api/decisions/scorecard 是纯聚合(见
-app/services/scorecard_service.py),同样不碰 LLM/网络。
+未实现的盯市盈亏(mark-to-market)。/api/decisions/scorecard 与
+/api/decisions/forward-returns 都是纯聚合(见 app/services/scorecard_service.py),
+同样不碰 LLM;forward-returns 唯一的"网络请求"是经由服务端行情源(deps.get_provider)
+取历史收盘价,单标的失败/为空只影响该标的的统计(unpriced),不影响其余标的、
+不抛异常。
 
-路由顺序注意:/decisions/scorecard 必须声明在任何未来的 /decisions/{id} 风格
-路由之前,否则会被当成 id 路径参数吞掉(FastAPI 按声明顺序匹配)——当前本模块
-还没有 /decisions/{id} 路由,但顺序先摆对,免得以后加了忘记挪。
+路由顺序注意:/decisions/scorecard、/decisions/forward-returns 必须声明在任何
+未来的 /decisions/{id} 风格路由之前,否则会被当成 id 路径参数吞掉(FastAPI 按
+声明顺序匹配)——当前本模块还没有 /decisions/{id} 路由,但顺序先摆对,免得
+以后加了忘记挪。
 
 payload_json / evidence_json 都是外部写入的自由格式 JSON;这里全程防御式解析
 (json.loads 失败、类型不对、字段缺失都当作"没有"处理),绝不因脏数据 500。
@@ -20,8 +25,9 @@ import json
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_session
-from app.services.scorecard_service import build_scorecard
+from app.api.deps import get_provider, get_session
+from app.data.base import PriceProvider
+from app.services.scorecard_service import DEFAULT_HORIZONS, build_forward_returns, build_scorecard
 from app.store.models import DecisionRow, MemoryEntryRow
 from app.store.repos.decision_repo import get_recent_decisions
 from app.store.repos.memory_repo import get_entries
@@ -31,6 +37,27 @@ from app.store.repos.settings_repo import get_app_settings
 router = APIRouter(tags=["history"])
 
 CHAIR_VERDICT_MAX_LEN = 300
+MAX_FORWARD_RETURN_HORIZONS = 8
+
+
+def _parse_horizons(raw: str | None) -> list[int]:
+    """逗号分隔的正整数列表;非法/非正条目直接丢弃,全部丢弃或缺省时退回
+    DEFAULT_HORIZONS——坏参数不能让端点 500 或返回空结果。"""
+    if not raw:
+        return list(DEFAULT_HORIZONS)
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        out.append(value)
+        if len(out) >= MAX_FORWARD_RETURN_HORIZONS:
+            break
+    return out or list(DEFAULT_HORIZONS)
 
 
 def _chair_verdict(payload_json: str) -> str:
@@ -67,6 +94,17 @@ def _decision_to_dict(row: DecisionRow) -> dict:
 def decisions_scorecard_route(days: int | None = Query(None, ge=1),
                               session: Session = Depends(get_session)) -> dict:
     return build_scorecard(session, days=days)
+
+
+@router.get("/decisions/forward-returns")
+def decisions_forward_returns_route(
+    horizons: str | None = Query(None),
+    days: int | None = Query(None, ge=1),
+    session: Session = Depends(get_session),
+    provider: PriceProvider = Depends(get_provider),
+) -> dict:
+    return build_forward_returns(session, provider, horizons=tuple(_parse_horizons(horizons)),
+                                 days=days)
 
 
 @router.get("/decisions")
