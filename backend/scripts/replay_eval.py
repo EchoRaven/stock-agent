@@ -28,6 +28,15 @@ KNOWN BIASES — read before trusting any number this prints:
     gap today, so this particular difference is currently nil.
   * One recent window is one market regime. Even a clean result here is weak
     evidence about behaviour in other regimes.
+  * SELL IS STRUCTURALLY UNTESTABLE HERE. The eval DB holds no positions, so
+    every call passes held=False, and committee_service._clamp_action rewrites
+    any "sell" to "hold". A `no_sells` flag on a replay scorecard is therefore an
+    artifact of this harness, NOT evidence the committee won't sell — and some
+    "hold" rows may be clamped sells. Judging sell behaviour needs a replay that
+    seeds positions first.
+  * Fail-safe rows (LLM unavailable/invalid -> hold with confidence 0.0) land in
+    the same table as real verdicts and will drag the hold rate up and the mean
+    confidence down. Count `confidence <= 0.05` before comparing two runs.
 
 Bars and news ARE as-of correct (both are date-windowed by briefing_service), and
 the macro regime is computed as of each replayed date.
