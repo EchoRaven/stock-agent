@@ -287,6 +287,31 @@ def test_memory_context_does_not_change_output_contract():
 _MARKET_PHRASE = "risk-on:SPY(450.12) 在 200 日均线(430.5)上方"
 
 
+def test_prompt_always_includes_decision_calibration():
+    """校准要求必须每次都进 prompt —— 回放证实委员会 96.7% 说买、置信度几乎恒为
+    0.85,这一节就是针对那个缺陷加的(见 committee_service._CALIBRATION_SECTION)。
+    要的是区分度:买需要具体理由、hold 合法、confidence 用满区间、空头有真实分量。
+    """
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False)
+    prompt = client.prompts[0]
+
+    assert "预筛" in prompt  # 强势是基线,不是买入理由
+    assert "hold 是完全正常" in prompt  # hold 合法化
+    assert "用满 0 到 1 区间" in prompt  # 反置信度压缩
+    assert "不要习惯性地给 0.85" in prompt  # 直指实测到的具体病症
+    assert "逐条回应" in prompt  # 空头有真实分量
+
+
+def test_calibration_does_not_change_output_contract():
+    """加校准只改 prompt 措辞,不改 clamp/契约:LLM 仍然完全不可信。"""
+    client = FakeGemini(_good_json())
+    result = run_committee(client, _briefing(), held=False)
+    assert set(result) == {"committee", "chair", "action", "confidence"}
+    assert result["action"] in {"buy", "sell", "hold"}
+    assert 0.0 <= result["confidence"] <= 1.0
+
+
 def test_prompt_includes_market_context_when_provided():
     briefing = _briefing()
     client = FakeGemini(_good_json())

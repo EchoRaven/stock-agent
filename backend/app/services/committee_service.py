@@ -38,6 +38,7 @@ _PROMPT_TEMPLATE = (
     "{news_block}\n"
     "{memory_section}"
     "{market_section}"
+    "{calibration_section}"
     "严格以下面的 JSON 结构输出,不要输出其他任何文字(不要 markdown 代码块,"
     "不要解释):\n"
     '{{"committee":{{"technical":{{"summary":"..."}},"fundamental":{{"summary":"..."}},'
@@ -64,6 +65,29 @@ _MEMORY_SECTION_TEMPLATE = (
 # 省略,不因大盘数据缺失而改变委员会本身的行为。
 _MARKET_CONTEXT_SECTION_TEMPLATE = "【宏观背景(仅供参考)】{market_context}\n"
 
+# 决策校准(2026-07-21 加):回放评测证实委员会有系统性缺陷——60 条决策里
+# 96.7% 是 buy、0% sell,58 条买入中 45 条置信度都是 0.85(见
+# scripts/replay_eval.py 与 memory 的 papertrading findings)。这样的输出几乎
+# 不带信息量:真正在做决策的是闸门,不是委员会。
+#
+# 这一节要的是**区分度**,不是悲观:目标是让"买"变成需要理由的结论、让
+# confidence 真正表达把握程度,而不是把 permabull 调成 permabear(那只是把
+# 偏置换个方向,同样没有信息量)。校准效果必须用同一把尺子(前瞻收益记分卡)
+# 做前后对比来验证,不能凭感觉。
+_CALIBRATION_SECTION = (
+    "决策校准要求(重要):\n"
+    "- 候选标的是量化动量筛选**已经预筛过**的,因此「近期走势强」是这批股票的共同"
+    "基线,本身不构成买入理由。只有当你能说出该股**相对其他同样强势的候选**的具体"
+    "优势时才给 buy;说不出具体优势就给 hold。\n"
+    "- hold 是完全正常且常见的结论。材料不足以支撑明确判断时就给 hold,不要为了"
+    "给出行动而给出行动。\n"
+    "- confidence 必须用满 0 到 1 区间,如实表达把握程度:0.2-0.4=证据薄弱或材料"
+    "不足;0.5=说不清;0.6-0.7=有一定依据;0.8 以上=证据充分且能明确说出理由。"
+    "不要习惯性地给 0.85。\n"
+    "- 空头(bear)的质疑必须被认真对待:主席若给出与空头相反的裁决,"
+    "bear_rebuttal 必须逐条回应空头提出的具体理由,不能只写一句「风险可控」。\n"
+)
+
 _HELD_LINE = "我们当前持有该股,请决定 继续持有(hold) 还是 卖出(sell)。"
 _NOT_HELD_LINE = "我们当前未持有,请决定 买入(buy) 还是 观望(hold)。"
 
@@ -89,6 +113,7 @@ def _build_prompt(briefing: dict, held: bool, memory_context: str = "",
         news_block=briefing.get("news_block", ""),
         memory_section=memory_section,
         market_section=market_section,
+        calibration_section=_CALIBRATION_SECTION,
     )
 
 
