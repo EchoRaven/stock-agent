@@ -429,8 +429,15 @@ export default function HistoryPage() {
                                   <td className={`px-3 py-1.5 font-medium ${ACTION_COLORS[action]}`}>
                                     {ACTION_LABELS[action]}
                                   </td>
+                                  {/* n 永远和 标的数/天数 一起显示:同标的相邻
+                                      日期高度自相关,行数会高估独立观测数 */}
                                   <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
                                     {s.n}
+                                    {s.n > 0 && (
+                                      <span className="ml-1 text-xs text-slate-400">
+                                        ({s.distinct_symbols}股/{s.distinct_days}天)
+                                      </span>
+                                    )}
                                   </td>
                                   <td
                                     className={`px-3 py-1.5 text-right tabular-nums ${pnlColor(s.mean_return_pct)}`}

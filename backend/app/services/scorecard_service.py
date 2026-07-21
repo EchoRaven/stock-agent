@@ -316,13 +316,23 @@ def _entry_lookup(bars_df, as_of: dt.date) -> tuple[int, float] | None:
     return pos, price
 
 
-def _action_stats(returns: list[float], action: str) -> dict:
-    n = len(returns)
+def _action_stats(rows: list[tuple[float, str, dt.date]], action: str) -> dict:
+    """rows: [(return_pct, symbol, as_of), ...]。
+
+    永远同时给出 distinct_symbols / distinct_days —— n 单独看会严重高估证据:
+    2026-07-21 实测 14 条 sell 的 5 日命中率 0%,看着像"卖出全错"的铁证,但那
+    14 条只落在 **3 只标的 / 8 天**上(META 7、AAPL 5、MA 2),同一标的相邻日期
+    的前瞻收益高度自相关,有效独立观测接近 3 而不是 14。不把这两个数摆出来,
+    读者(包括我自己)就会把 n 当成独立样本数。
+    """
+    n = len(rows)
     if n == 0:
         return {
-            "n": 0, "mean_return_pct": None, "median_return_pct": None,
+            "n": 0, "distinct_symbols": 0, "distinct_days": 0,
+            "mean_return_pct": None, "median_return_pct": None,
             "hit_rate": None, "hit_rate_meaning": HIT_RATE_MEANING[action],
         }
+    returns = [r for r, _, _ in rows]
     hit_rate: float | None
     if action == "buy":
         hit_rate = _round3(sum(1 for r in returns if r > 0) / n)
@@ -332,6 +342,8 @@ def _action_stats(returns: list[float], action: str) -> dict:
         hit_rate = None
     return {
         "n": n,
+        "distinct_symbols": len({sym for _, sym, _ in rows}),
+        "distinct_days": len({d for _, _, d in rows}),
         "mean_return_pct": _round3(statistics.mean(returns)),
         "median_return_pct": _round3(statistics.median(returns)),
         "hit_rate": hit_rate,
@@ -550,7 +562,7 @@ def build_forward_returns(session: Session, price_provider,
     by_horizon: dict[str, dict] = {}
     for h in horizons:
         matured = pending = unpriced = 0
-        returns_by_action: dict[str, list[float]] = {a: [] for a in ACTIONS}
+        returns_by_action: dict[str, list[tuple[float, str, dt.date]]] = {a: [] for a in ACTIONS}
         matured_buys: list[tuple[float, float, dt.date]] = []
 
         for row in rows:
@@ -567,7 +579,7 @@ def build_forward_returns(session: Session, price_provider,
             ret = _round3((exit_price / entry_price - 1) * 100)
             matured += 1
             if row.action in returns_by_action:
-                returns_by_action[row.action].append(ret)
+                returns_by_action[row.action].append((ret, row.symbol, row.as_of))
             if row.action == "buy":
                 matured_buys.append((row.confidence, ret, row.as_of))
 

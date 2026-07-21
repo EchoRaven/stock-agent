@@ -177,7 +177,11 @@ def _print_report(session, price_provider, horizons):
             s = block["by_action"][action]
             if s["n"]:
                 hit = "—" if s["hit_rate"] is None else f"{s['hit_rate']:.1%}"
-                print(f"      {action:5s} n={s['n']:3d} 均值={s['mean_return_pct']:+.3f}% "
+                # n 后面永远跟 标的数/天数:同标的相邻日期高度自相关,n 会严重
+                # 高估独立观测数(14条sell其实只有3只标的)
+                print(f"      {action:5s} n={s['n']:3d} "
+                      f"({s['distinct_symbols']}只标的/{s['distinct_days']}天) "
+                      f"均值={s['mean_return_pct']:+.3f}% "
                       f"中位={s['median_return_pct']:+.3f}% 命中={hit} ({s['hit_rate_meaning']})")
         print("      买入按置信度分桶:")
         for b in block["buy_by_confidence"]:

@@ -374,6 +374,14 @@ export interface ForwardReturnCoverage {
 
 export interface ForwardReturnActionStats {
   n: number;
+  /**
+   * Always read `n` together with these. Rows massively overstate the evidence:
+   * 14 sells spread over only 3 symbols / 8 days are nowhere near 14 independent
+   * observations, because one symbol's forward returns on nearby dates are
+   * highly autocorrelated.
+   */
+  distinct_symbols: number;
+  distinct_days: number;
   /** Percentage-point value, e.g. 1.5 == +1.5%. null when n === 0. */
   mean_return_pct: number | null;
   median_return_pct: number | null;

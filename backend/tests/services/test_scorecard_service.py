@@ -422,7 +422,8 @@ def test_forward_returns_matured_buys_rose_exact_stats(session):
         block = result["by_horizon"][h_key]
         assert block["coverage"] == {"matured": 0, "pending": 2, "unpriced": 0}
         assert block["by_action"]["buy"] == {
-            "n": 0, "mean_return_pct": None, "median_return_pct": None,
+            "n": 0, "distinct_symbols": 0, "distinct_days": 0,
+            "mean_return_pct": None, "median_return_pct": None,
             "hit_rate": None, "hit_rate_meaning": "涨了算对",
         }
 
@@ -591,6 +592,31 @@ def test_forward_returns_confidence_signal_same_day_pile_refuses_conclusion(sess
     assert signal["pearson_r"] is None  # 即便相关性完美也不给数
     assert signal["verdict"] is None
     assert f"≥{MIN_SIGNAL_DAYS} 天" in signal["note"]
+
+
+def test_forward_returns_action_stats_report_distinct_symbols_and_days(session):
+    """n 必须永远伴随 distinct_symbols/distinct_days —— 否则会被当成独立样本数。
+
+    实测教训:14 条 sell 的 5 日命中率 0% 看着像铁证,但只落在 3 只标的 / 8 天上,
+    同标的相邻日期高度自相关,有效观测远小于 14。
+    """
+    # 6 条 sell:只有 2 只标的、3 个决策日(每只在 3 天各一条)
+    for day_idx in range(3):
+        for sym in ("SA", "SB"):
+            save_decision(session, dt.date.fromisoformat(FR_DATES[day_idx]), sym,
+                          "sell", 0.8, "advisory", "{}", held=True)
+    session.commit()
+
+    # 每个 symbol 一条平价序列即可:这里只关心计数,不关心收益数值
+    bars_map = {sym: _bars([100.0] * len(FR_DATES)) for sym in ("SA", "SB")}
+    provider = FixedBarsProvider(bars_map=bars_map)
+
+    result = build_forward_returns(session, provider, horizons=(1,), now_utc=FR_NOW_UTC)
+
+    sell = result["by_horizon"]["1"]["by_action"]["sell"]
+    assert sell["n"] == 6  # 行数
+    assert sell["distinct_symbols"] == 2  # 但只有 2 只标的
+    assert sell["distinct_days"] == 3  # 和 3 个决策日
 
 
 def test_forward_returns_weak_correlation_reported_as_not_significant(session):
