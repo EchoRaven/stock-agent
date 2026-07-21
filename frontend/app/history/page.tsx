@@ -7,6 +7,7 @@ import { ApiError, apiGet } from "@/lib/api";
 import { money, pct } from "@/lib/format";
 import type {
   DecisionHistoryItem,
+  ForwardReturns,
   MemoryEntry,
   PerformanceResponse,
   Scorecard,
@@ -128,6 +129,9 @@ export default function HistoryPage() {
   const [scorecard, setScorecard] = useState<Scorecard | null>(null);
   const [scorecardError, setScorecardError] = useState<string | null>(null);
 
+  const [forward, setForward] = useState<ForwardReturns | null>(null);
+  const [forwardError, setForwardError] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -176,6 +180,18 @@ export default function HistoryPage() {
         })
         .catch((err) => {
           if (!cancelled) setScorecardError(errMessage(err, "决策记分卡加载失败"));
+        }),
+      // Forward returns hit the price provider, so they are the slowest and
+      // most failure-prone call on this page — also strictly best-effort.
+      apiGet<ForwardReturns>("decisions/forward-returns")
+        .then((res) => {
+          if (!cancelled) {
+            setForward(res);
+            setForwardError(null);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setForwardError(errMessage(err, "前瞻收益加载失败"));
         }),
     ]).finally(() => {
       if (!cancelled) setLoading(false);
@@ -321,6 +337,126 @@ export default function HistoryPage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold text-slate-700">决策是否奏效(前瞻收益)</h2>
+        <p className="text-xs text-slate-500">
+          决策做出之后股价实际怎么走——按动作、按置信度分桶。核心问题:高置信度是否真的对应更好的收益。
+        </p>
+        {forwardError && <ErrorBanner message={forwardError} />}
+        {forward && (
+          <div className="space-y-4 rounded-md border border-slate-200 bg-white p-4">
+            <p className="text-sm text-slate-600">{forward.note}</p>
+
+            {forward.horizons.map((h) => {
+              const block = forward.by_horizon[String(h)];
+              if (!block) return null;
+              const { matured, pending, unpriced } = block.coverage;
+              const signal = block.confidence_signal;
+              const maxBucketN = Math.max(1, ...block.buy_by_confidence.map((b) => b.n));
+
+              return (
+                <div
+                  key={h}
+                  className="space-y-2 border-t border-slate-100 pt-3 first:border-t-0 first:pt-0"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="text-sm font-semibold text-slate-900">{h} 个交易日后</span>
+                    <span className="text-xs text-slate-400">
+                      已成熟 {matured} · 未到期 {pending} · 无行情 {unpriced}
+                    </span>
+                  </div>
+
+                  {/* matured === 0 renders the coverage explanation, never a table of
+                      dashes — "not known yet" must not look like "measured as zero". */}
+                  {matured === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      尚无成熟数据{pending > 0 && `:${pending} 条决策还没走满 ${h} 个交易日`}
+                      {unpriced > 0 && `,${unpriced} 条拿不到行情`},暂时无法评价。
+                    </p>
+                  ) : (
+                    <>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-50">
+                            <tr>
+                              <Th>动作</Th>
+                              <Th align="right">样本</Th>
+                              <Th align="right">平均收益</Th>
+                              <Th align="right">中位数</Th>
+                              <Th align="right">命中率</Th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {(["buy", "sell", "hold"] as const).map((action) => {
+                              const s = block.by_action[action];
+                              return (
+                                <tr key={action}>
+                                  <td className={`px-3 py-1.5 font-medium ${ACTION_COLORS[action]}`}>
+                                    {ACTION_LABELS[action]}
+                                  </td>
+                                  <td className="px-3 py-1.5 text-right tabular-nums text-slate-600">
+                                    {s.n}
+                                  </td>
+                                  <td
+                                    className={`px-3 py-1.5 text-right tabular-nums ${pnlColor(s.mean_return_pct)}`}
+                                  >
+                                    {signedPctPoints(s.mean_return_pct, 2)}
+                                  </td>
+                                  <td
+                                    className={`px-3 py-1.5 text-right tabular-nums ${pnlColor(s.median_return_pct)}`}
+                                  >
+                                    {signedPctPoints(s.median_return_pct, 2)}
+                                  </td>
+                                  <td
+                                    className="px-3 py-1.5 text-right tabular-nums text-slate-600"
+                                    title={s.hit_rate_meaning}
+                                  >
+                                    {s.hit_rate === null ? "—" : pct(s.hit_rate, 0)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                          买入决策 · 按置信度分桶
+                        </div>
+                        {block.buy_by_confidence.map((b) => (
+                          <BarRow
+                            key={b.bucket}
+                            label={b.bucket}
+                            detail={
+                              b.n === 0
+                                ? "—"
+                                : `${b.n} 条 · ${signedPctPoints(b.mean_return_pct, 2)} · 命中 ${
+                                    b.hit_rate === null ? "—" : pct(b.hit_rate, 0)
+                                  }`
+                            }
+                            widthPct={(b.n / maxBucketN) * 100}
+                            barClassName="bg-indigo-400"
+                          />
+                        ))}
+                      </div>
+
+                      <p className="pt-1 text-xs">
+                        {signal.verdict ? (
+                          <span className="font-medium text-slate-700">{signal.verdict}</span>
+                        ) : (
+                          <span className="text-slate-500">{signal.note}</span>
+                        )}
+                      </p>
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
