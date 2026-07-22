@@ -216,6 +216,10 @@ def main(argv=None) -> int:
                         help="每个交易日取 screen 前几名(默认 5)。总 LLM 调用 = dates × top-k")
     parser.add_argument("--end-days-ago", type=int, default=8,
                         help="最近一个回放日距今多少天(默认 8,让 5 日 horizon 有机会成熟)")
+    parser.add_argument("--end-date", default=None,
+                        help="显式指定最后一个回放日 YYYY-MM-DD(覆盖 --end-days-ago)。"
+                             "用于跨市场区间验证(例如回放一段下跌窗口)。注意:回放日"
+                             "离今天越远,基本面的未来函数污染越严重(用的是今天的财报)")
     parser.add_argument("--horizons", default="1,5",
                         help="前瞻收益 horizon,逗号分隔(默认 1,5)")
     parser.add_argument("--hold", default="",
@@ -230,7 +234,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     horizons = [int(x) for x in args.horizons.split(",") if x.strip().isdigit()] or [1, 5]
-    end = dt.date.today() - dt.timedelta(days=args.end_days_ago)
+    if args.end_date:
+        end = dt.date.fromisoformat(args.end_date)
+    else:
+        end = dt.date.today() - dt.timedelta(days=args.end_days_ago)
     dates = _weekdays_back(end, args.dates)
     held_symbols = frozenset(s.strip().upper() for s in args.hold.split(",") if s.strip())
 
