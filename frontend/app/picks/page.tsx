@@ -7,6 +7,7 @@ import { ApiError, apiPost } from "@/lib/api";
 import type { PicksResponse } from "@/lib/types";
 import { pct } from "@/lib/format";
 import { ErrorBanner, Th } from "@/components/ui";
+import { RegimeBanner } from "@/components/RegimeBanner";
 
 const N_PICKS = 8;
 
@@ -57,6 +58,10 @@ export default function PicksPage() {
           对当日量化筛选出的候选,逐只跑 AI 委员会,按买入信心排序。这是分析建议,不会下单。
         </p>
       </div>
+
+      {/* 大盘背景放在荐股前:回放评测证实委员会的买入倾向确实随 regime 变化
+          (牛市多买、risk-off 少买),看荐股时先看市场环境有意义。 */}
+      <RegimeBanner caption="大盘环境会影响委员会的买入倾向:risk-off 时通常更少建议买入。仅参考,不驱动下单。" />
 
       <div className="flex flex-wrap items-center gap-3">
         <button
