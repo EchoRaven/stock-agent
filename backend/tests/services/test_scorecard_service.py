@@ -568,6 +568,31 @@ def test_forward_returns_confidence_signal_correlated_synthetic_buys(session):
     assert "note" not in signal
 
 
+def test_confidence_signal_perfect_correlation_stays_json_serializable():
+    """r 恰为 ±1.0 时 t 值数学上是 inf,但 inf 不能 JSON 序列化(FastAPI
+    allow_nan=False 会 500)。对外 t_stat 必须降级为 None,同时 significant 仍
+    正确为 True。直接喂 _confidence_signal 完全共线的数据命中 r==1.0 分支
+    (correlated_synthetic_buys 走 bars→return 管道,FP 误差落在 0.9999,绕过了
+    这个分支)。
+    """
+    import json
+
+    from app.services.scorecard_service import _confidence_signal
+
+    # round(...,4) 让协方差/方差在浮点下恰好抵消到 r==1.0(standalone 验证过)
+    matured_buys = [
+        (round(0.4 + 0.02 * i, 4), 2.0 * i, dt.date.fromisoformat(FR_DATES[i % MIN_SIGNAL_DAYS]))
+        for i in range(MIN_SIGNAL_N)
+    ]
+    signal = _confidence_signal(matured_buys)
+
+    assert signal["pearson_r"] == pytest.approx(1.0)
+    assert signal["t_stat"] is None       # inf 对外降级为 None
+    assert signal["significant"] is True  # 但显著性结论不受影响
+    assert "正相关" in signal["verdict"]
+    json.dumps(signal, allow_nan=False)   # FastAPI 严格模式:inf/nan 会抛
+
+
 def test_forward_returns_confidence_signal_same_day_pile_refuses_conclusion(session):
     """条数够但全来自同一天 → 拒绝下结论。
 

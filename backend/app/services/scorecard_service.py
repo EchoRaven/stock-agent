@@ -468,10 +468,15 @@ def _confidence_signal(matured_buys: list[tuple[float, float, dt.date]]) -> dict
     counts = Counter(confidences)
     dominant_share = _round3(counts.most_common(1)[0][1] / n)
 
+    # |r|==1(完全相关)时 _t_statistic 给 inf——significant 已据此正确判为 True,
+    # 但 inf 无法 JSON 序列化(FastAPI allow_nan=False 会 500),对外一律降级为
+    # None(t 值无穷大本就无意义)。显著性结论不受影响。
+    t_stat_out = _round3(t_stat) if (t_stat is not None and math.isfinite(t_stat)) else None
+
     out = {
         **base,
         "pearson_r": r3,
-        "t_stat": _round3(t_stat) if t_stat is not None else None,
+        "t_stat": t_stat_out,
         "t_critical": t_crit,
         "significant": significant,
         "dominant_confidence_share": dominant_share,
