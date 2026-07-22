@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ApiError, apiPost } from "@/lib/api";
 import type { PicksResponse } from "@/lib/types";
@@ -10,6 +10,25 @@ import { ErrorBanner, Th } from "@/components/ui";
 import { RegimeBanner } from "@/components/RegimeBanner";
 
 const N_PICKS = 8;
+
+// Picks are ephemeral server-side (generate_picks doesn't persist — persisting
+// into the decisions table would skew the scorecard). Cache the last result in
+// the browser so revisiting the page shows it instantly instead of a blank page
+// plus a 1–2 min regenerate wait. Clearly timestamped so nobody mistakes a
+// cached list for a fresh one.
+const CACHE_KEY = "stock-agent:picks:last";
+
+interface CachedPicks {
+  result: PicksResponse;
+  generatedAt: string; // ISO wall-clock, client-side
+}
+
+function todayLocalISODate(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
 
 const ACTION_LABELS: Record<string, string> = { buy: "买入", sell: "卖出", hold: "观望" };
 
@@ -28,15 +47,39 @@ function truncate(text: string, max: number): string {
 
 export default function PicksPage() {
   const [result, setResult] = useState<PicksResponse | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Hydrate the last cached result on mount (client-only — localStorage isn't
+  // available during SSR). Corrupt/absent cache is ignored, never fatal.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as CachedPicks;
+      if (parsed?.result?.picks) {
+        setResult(parsed.result);
+        setGeneratedAt(parsed.generatedAt ?? null);
+      }
+    } catch {
+      /* ignore corrupt cache */
+    }
+  }, []);
 
   async function onGenerate() {
     setBusy(true);
     setError(null);
     try {
       const res = await apiPost<PicksResponse>("picks", { n: N_PICKS });
+      const at = new Date().toISOString();
       setResult(res);
+      setGeneratedAt(at);
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({ result: res, generatedAt: at }));
+      } catch {
+        /* storage full/unavailable is non-fatal — the in-memory result still shows */
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 400) setError("Gemini 未配置");
@@ -69,7 +112,7 @@ export default function PicksPage() {
           disabled={busy}
           className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
         >
-          {busy ? "委员会分析中…" : "生成 AI 荐股"}
+          {busy ? "委员会分析中…" : result ? "重新生成" : "生成 AI 荐股"}
         </button>
         {busy && (
           <span className="text-sm text-slate-500">
@@ -84,7 +127,14 @@ export default function PicksPage() {
         <div className="space-y-2">
           <p className="text-xs text-slate-400">
             as of {result.as_of} · {result.picks.length} 只候选 · {result.gemini_calls} 次 LLM 调用
+            {generatedAt && ` · 生成于 ${new Date(generatedAt).toLocaleString()}`}
           </p>
+          {/* 缓存的荐股来自更早的交易日 → 明确提示可能过时,别把旧列表当新的看 */}
+          {result.as_of !== todayLocalISODate() && (
+            <p className="text-xs text-amber-700">
+              ⚠️ 这是较早的缓存结果(生成日 {result.as_of}),点上方「重新生成」可刷新为最新。
+            </p>
+          )}
 
           {result.errors.length > 0 && (
             <p className="text-sm text-slate-500">{result.errors.length} 只分析失败</p>
