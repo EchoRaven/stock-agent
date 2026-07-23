@@ -124,11 +124,14 @@ def reject_order(session: Session, order_id: int, reason: str = "rejected by use
     return {"order": order_to_dict(row), "note": "rejected"}
 
 
-def settle_open(session: Session, fill_date: dt.date, open_prices: dict) -> list:
-    """下一交易时段开盘撮合(CLI/cron 触发)。"""
+def settle_open(session: Session, fill_date: dt.date, open_prices: dict,
+                restrict_to: set | None = None) -> list:
+    """下一交易时段开盘撮合(CLI/cron 触发)。restrict_to 给出时只撮合其中的标的,
+    其余挂单原样保留(逐标的环内撮合用,避免跨标的误 cancel)。"""
     return [
         {"order_id": f.order_id, "symbol": f.symbol, "side": f.side,
          "shares": f.shares, "price": round(f.price, 4),
          "fill_date": f.fill_date.isoformat()}
-        for f in _get_broker(session).process_fills(session, fill_date, open_prices)
+        for f in _get_broker(session).process_fills(session, fill_date, open_prices,
+                                                    restrict_to=restrict_to)
     ]

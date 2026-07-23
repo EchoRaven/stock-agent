@@ -29,11 +29,21 @@ class PaperBroker(Broker):
             raise ValueError("shares must be positive")
         return order_repo.update_status(session, order.id, order_repo.STATUS_SUBMITTED)
 
-    def process_fills(self, session: Session, fill_date: dt.date, open_prices: dict) -> list:
-        """撮合所有 submitted 订单;无法成交的一律 cancelled + reason(留痕,不静默)。"""
+    def process_fills(self, session: Session, fill_date: dt.date, open_prices: dict,
+                      restrict_to: set | None = None) -> list:
+        """撮合 submitted 订单;无法成交的一律 cancelled + reason(留痕,不静默)。
+
+        restrict_to 给出时,只处理 symbol 在其中的订单——其余 SUBMITTED 单原样
+        保留,绝不因为不在 open_prices 里就被 cancel。逐标的环内撮合必须用它,
+        否则单标的价格字典会把别的标的遗留的挂单(可能是减仓卖单)跨标的误杀
+        (money-path review Finding B)。restrict_to=None 时保持全量撮合语义
+        (轮末扫尾 / CLI / 路由的整体撮合)。
+        """
         account = paper_repo.get_account(session, get_app_settings(session).initial_cash)
         fills = []
         for order in order_repo.get_orders_by_status(session, order_repo.STATUS_SUBMITTED):
+            if restrict_to is not None and order.symbol not in restrict_to:
+                continue
             price = open_prices.get(order.symbol)
             if price is None or price <= 0:
                 order_repo.update_status(session, order.id, order_repo.STATUS_CANCELLED,

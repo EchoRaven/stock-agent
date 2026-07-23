@@ -57,8 +57,14 @@ class FutuBroker(Broker):
         self._guard_env()
         return self._place_order(session, order)
 
-    def process_fills(self, session: Session, fill_date: dt.date, open_prices: dict) -> list:
-        """对账 STATUS_SUBMITTED 订单;open_prices 未使用(见模块 docstring)。"""
+    def process_fills(self, session: Session, fill_date: dt.date, open_prices: dict,
+                      restrict_to: set | None = None) -> list:
+        """对账 STATUS_SUBMITTED 订单;open_prices 未使用(见模块 docstring)。
+
+        restrict_to 在此后端无跨标的误杀问题(按券商 order_id 对账,不靠价格字典
+        决定取消),接受该参数仅为与 PaperBroker 接口一致;传入时只对账其中的
+        symbol,其余不动。
+        """
         self._guard_env()
         futu_mod = self._import_sdk()
         ctx = self._connect(futu_mod)
@@ -66,7 +72,7 @@ class FutuBroker(Broker):
             deals = self._query_deals(futu_mod, ctx)
         finally:
             self._close(ctx)
-        return self._reconcile(session, fill_date, deals)
+        return self._reconcile(session, fill_date, deals, restrict_to)
 
     # ------------------------------------------------------------------
     # 私有:安全门
@@ -225,10 +231,13 @@ class FutuBroker(Broker):
         return paper_repo.add_fill(
             session, order.id, fill_date, order.symbol, order.side, qty, price)
 
-    def _reconcile(self, session: Session, fill_date: dt.date, deals) -> list:
+    def _reconcile(self, session: Session, fill_date: dt.date, deals,
+                   restrict_to: set | None = None) -> list:
         by_order_id = self._index_deals_by_order_id(deals)
         fills = []
         for order in order_repo.get_orders_by_status(session, order_repo.STATUS_SUBMITTED):
+            if restrict_to is not None and order.symbol not in restrict_to:
+                continue
             try:
                 fill = self._reconcile_one(session, fill_date, order, by_order_id)
             except Exception:

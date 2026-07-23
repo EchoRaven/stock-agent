@@ -21,7 +21,8 @@ from app.data.fundamentals_edgar import FundamentalsProvider, FundamentalsSummar
 from app.data.news_finnhub import NewsProvider
 from app.services.trade_cycle_service import run_trade_cycle
 from app.store.db import init_db, make_engine, make_session_factory
-from app.store.repos.order_repo import (STATUS_REJECTED, STATUS_SUBMITTED, STATUSES,
+from app.store.repos.order_repo import (STATUS_CANCELLED, STATUS_FILLED, STATUS_REJECTED,
+                                        STATUS_SUBMITTED, STATUSES,
                                         create_order, get_orders_by_status)
 from app.store.repos.paper_repo import add_fill, get_account, get_positions, set_position
 from app.store.repos.settings_repo import (MODE_ADVISORY, MODE_FULL_AUTO, set_mode,
@@ -550,6 +551,33 @@ def test_held_symbol_never_skipped_at_zero_capacity_and_can_still_sell(session):
     assert held_decision["action"] == "sell"
     assert held_decision["submit_result"]["order"]["status"] == STATUS_SUBMITTED
     assert "HELD" not in get_positions(session)
+
+
+def test_in_loop_settle_does_not_cancel_other_symbols_pending_orders(session):
+    """回归(money-path review Finding B):环内逐标的撮合只能碰当前标的。
+
+    过去 settle_open 传单标的价格字典 {symbol: price},而 process_fills 会把所有
+    不在字典里的 SUBMITTED 订单一律 cancel("no valid open price")——于是撮合
+    NEW 时会顺手取消掉别的标的遗留的 SUBMITTED 单(可能是一张减仓卖单),还盖上
+    误导性的"无开盘价"理由,轮末兜底扫尾也因此扑空。遗留单应当留给轮末用完整
+    价源去撮合,而不是在环内被跨标的误杀。
+    """
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    as_of = et_trading_day(NOW_UTC)
+    # 上一轮(如 settle=False)遗留的一张 OLD 买单,仍 SUBMITTED,且行情可得
+    create_order(session, as_of, "OLD", "buy", 5, STATUS_SUBMITTED, MODE_FULL_AUTO)
+    provider = FakeProvider({"OLD": 50.0, "NEW": 100.0})
+    gemini = FakeGemini(by_symbol={"NEW": _committee_json("buy", 0.9)})
+
+    result = run_trade_cycle(session, provider, RaisingNewsProvider(), FakeFunds(), gemini,
+                             now_utc=NOW_UTC, universe=["NEW"], max_eval=None)
+
+    # NEW 本轮应正常建仓
+    assert "NEW" in get_positions(session)
+    # 关键:OLD 的遗留买单绝不能在环内被跨标的取消;应由轮末扫尾按其自身行情成交
+    assert not any(o.symbol == "OLD" for o in get_orders_by_status(session, STATUS_CANCELLED))
+    assert "OLD" in get_positions(session)  # 遗留买单被正确撮合 -> 建仓
+    assert any(o.symbol == "OLD" for o in get_orders_by_status(session, STATUS_FILLED))
 
 
 def test_capacity_available_skips_nothing(session):

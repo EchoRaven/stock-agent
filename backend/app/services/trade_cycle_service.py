@@ -229,9 +229,14 @@ def run_trade_cycle(session, price_provider, news_provider, fundamentals_provide
             order = result.get("order")
             if settle and order is not None and order["status"] == STATUS_SUBMITTED:
                 price = fill_prices.get(symbol)
-                symbol_open_prices = {symbol: price} if price is not None else {}
-                fills.extend(settle_open(session, as_of, symbol_open_prices))
-                session.commit()
+                # restrict_to={symbol}:环内撮合只碰当前标的,绝不因单标的价格字典
+                # 把别的标的遗留的挂单跨标的误 cancel(money-path review Finding B)。
+                # 当前标的取不到价时,不在环内强行处理(留给轮末扫尾用更全的价源),
+                # 避免把一张本可成交的单当即以"无开盘价"取消掉。
+                if price is not None:
+                    fills.extend(settle_open(session, as_of, {symbol: price},
+                                             restrict_to={symbol}))
+                    session.commit()
         except Exception as exc:
             logger.exception("trade cycle failed for %s", symbol)
             errors.append({"symbol": symbol, "error": str(exc)})
