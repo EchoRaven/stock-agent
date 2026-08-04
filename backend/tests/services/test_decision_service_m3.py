@@ -79,6 +79,46 @@ def test_full_auto_over_cap_rejected_even_with_bypass_keys(session):
     assert "single-position cap" in result["order"]["reason"]
 
 
+# ---------------------------------------------------------------------------
+# Finding A 遏制性回归(money-path review):submit_decision 目前**信任调用方传入
+# 的 shares**(不在函数内服务端重算),只由闸门/撮合把它兜住。这不是当前可利用
+# 的漏洞,但字面红线#2("shares 永远服务端算")靠的是纵深防御而非直接强制。以下
+# 两个用例把"即便传天量 shares 也无害"这一遏制性质钉成可执行不变量——若将来闸门
+# 或撮合的边界被削弱导致超限建仓 / 超卖,这两个测试立即 fail(正是 review 担心的
+# 未来回归点)。
+# ---------------------------------------------------------------------------
+
+def test_finding_a_oversized_buy_shares_cannot_exceed_single_position_cap(session):
+    """天量买入 shares 也绝不可能建成超过单标的上限的仓位——闸门按 服务端价 ×
+    shares 判定并直接拒单,不产生任何持仓。"""
+    from app.store.repos.paper_repo import get_positions
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    # equity=initial_cash(100k),单标的上限默认 0.20 → 20k;price 100 → 服务端上限 200 股
+    payload = make_decision_payload(symbol="AAPL", shares=10_000_000)
+    result = submit_decision(session, payload, prices={"AAPL": 100.0}, now_utc=NOW_UTC)
+    assert result["order"]["status"] == STATUS_REJECTED
+    assert "single-position cap" in result["order"]["reason"]
+    assert get_positions(session) == {}  # 没有任何超限仓位落地
+
+
+def test_finding_a_oversized_sell_shares_cannot_oversell(session):
+    """天量卖出 shares 撮合时只会卖出实际持有的股数(PaperBroker._execute 取
+    min(order.shares, held)),持仓归零、绝不出现负仓/超卖。"""
+    from app.execution.order_manager import settle_open
+    from app.store.repos.paper_repo import get_positions
+    set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
+    set_position(session, "AAPL", 10, 90.0)  # 实际只持有 10 股
+    payload = make_decision_payload(symbol="AAPL", action="sell", shares=10_000_000)
+    result = submit_decision(session, payload, prices={"AAPL": 100.0}, now_utc=NOW_UTC)
+    assert result["order"]["status"] == STATUS_SUBMITTED  # 卖出放行(闸门不拦减仓)
+
+    fills = settle_open(session, dt.date(2026, 7, 17), {"AAPL": 100.0})
+    session.commit()
+    assert len(fills) == 1
+    assert fills[0]["shares"] == 10  # 只卖实际持有的 10 股,不是 10_000_000
+    assert "AAPL" not in get_positions(session)  # 归零删仓,无负仓
+
+
 def test_full_auto_buy_without_price_fail_safe_rejected(session):
     # 服务端取不到参考价 → default-deny,而不是按 0 元放行
     set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
