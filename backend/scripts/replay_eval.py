@@ -72,6 +72,7 @@ from app.services.market_regime_service import get_regime, regime_context_line
 from app.services.scorecard_service import build_forward_returns, build_scorecard
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import get_decisions, save_decision
+from scripts._health import FailSafeGuard, GeminiUnavailable, require_gemini
 
 REPLAY_MODE = "replay"  # never a live trading mode; only ever written by this script
 DEFAULT_DB = "scripts/replay_eval.db"
@@ -90,7 +91,7 @@ def _weekdays_back(end: dt.date, count: int) -> list:
 
 
 def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days,
-                     held_symbols=frozenset(), verbose=True):
+                     held_symbols=frozenset(), verbose=True, guard=None):
     """一个交易日:screen -> 逐标的 briefing+committee -> 存 mode=replay 决策。
     返回本日新增决策数。已有该日决策则跳过(可断点续跑,不重复烧 LLM)。
 
@@ -139,6 +140,10 @@ def _replay_one_date(session, as_of, providers, gemini, top_k, lookback_days,
             if verbose:
                 print(f"  {as_of}  {symbol:6s} {'HELD' if held else '    '} "
                       f"{committee['action']:5s} conf={committee['confidence']:.2f}")
+            if guard is not None:
+                guard.observe(committee["confidence"])  # fail-safe 率过高会抛,熔断整轮
+        except GeminiUnavailable:
+            raise  # 熔断信号:必须冒泡到 main 终止,别被下面的兜底 except 吞掉
         except Exception as exc:  # noqa: BLE001 - 单只失败不该中断整轮回放
             print(f"  {as_of}  {symbol:6s} FAILED: {exc}")
     session.commit()
@@ -267,15 +272,28 @@ def main(argv=None) -> int:
     init_db(engine)
     with make_session_factory(engine)() as session:
         if not args.report_only:
+            # 跑批前探活:配额耗尽(429)就别开跑,免得产出一堆 fail-safe 污染数据
+            try:
+                require_gemini(gemini)
+            except GeminiUnavailable as exc:
+                print(f"⛔ {exc}", file=sys.stderr)
+                return 3
             print(f"回放 {len(dates)} 个交易日到独立库 {args.db} "
                   f"(线上库不受影响),每日 top-{args.top_k}"
                   + (f",持仓 {sorted(held_symbols)} 按 held=True 评估" if held_symbols
                      else ",无持仓(sell 测不到)") + ":")
             total = 0
-            for as_of in dates:
-                total += _replay_one_date(session, as_of, providers, gemini,
-                                          args.top_k, settings.lookback_days,
-                                          held_symbols=held_symbols)
+            guard = FailSafeGuard()
+            try:
+                for as_of in dates:
+                    total += _replay_one_date(session, as_of, providers, gemini,
+                                              args.top_k, settings.lookback_days,
+                                              held_symbols=held_symbols, guard=guard)
+            except GeminiUnavailable as exc:
+                session.commit()  # 已写的真实决策保留;但本库已含部分数据,重跑前先删
+                print(f"⛔ {exc}\n   已写 {total} 条(可能含 fail-safe);建议删掉 "
+                      f"{args.db} 后等配额恢复重跑。", file=sys.stderr)
+                return 3
             print(f"\n新增 {total} 条 mode={REPLAY_MODE} 决策")
         _print_report(session, price_provider, horizons)
     return 0

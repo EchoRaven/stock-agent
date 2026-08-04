@@ -58,6 +58,7 @@ from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.memory_repo import get_entries
 from app.store.repos.paper_repo import get_account, get_positions
 from app.store.repos.settings_repo import MODE_FULL_AUTO, get_app_settings, set_mode
+from scripts._health import FailSafeGuard, GeminiUnavailable, require_gemini
 
 DEFAULT_DB = "scripts/replay_loop.db"
 # 小而波动的池子:窗口有限时更容易产生开→平的完整往返(闭环的燃料)
@@ -144,12 +145,20 @@ def main(argv=None) -> int:
     init_db(engine)
     with make_session_factory(engine)() as session:
         if not args.report_only:
+            # 跑批前探活:配额耗尽(429)委员会会全 fail-safe(hold),整段模拟只会
+            # 产出零成交零复盘的垃圾——直接别开跑。
+            try:
+                require_gemini(gemini)
+            except GeminiUnavailable as exc:
+                print(f"⛔ {exc}", file=sys.stderr)
+                return 3
             # 隔离库里开 full_auto(唯一真相在 DB;绝不影响线上库的 mode)
             set_mode(session, MODE_FULL_AUTO, confirm_full_auto=True)
             session.commit()
             print(f"在独立库 {args.db} 上按历史推进 full_auto 交易循环 "
                   f"({len(days)} 个交易日,池 {len(universe)} 只):")
             calls = fills = reviews = 0
+            guard = FailSafeGuard()
             for as_of in days:
                 now_utc = dt.datetime(as_of.year, as_of.month, as_of.day, 16, 0, tzinfo=dt.UTC)
                 try:
@@ -166,6 +175,12 @@ def main(argv=None) -> int:
                 mark = f"  成交 {nf}" if nf else ""
                 mark += f"  复盘+{nr}" if nr else ""
                 print(f"  {as_of}  决策 {len(r.get('decisions', []))}{mark}")
+                try:  # 中途配额挂掉(委员会全 fail-safe)就熔断,别烧完整段
+                    for d in r.get("decisions", []):
+                        guard.observe(d.get("confidence"))
+                except GeminiUnavailable as exc:
+                    print(f"⛔ {exc}", file=sys.stderr)
+                    return 3
             print(f"\n模拟完成:{calls} 次 Gemini 调用,累计成交 {fills} 笔,"
                   f"新写复盘 {reviews} 条")
         _summarize(session, universe)
