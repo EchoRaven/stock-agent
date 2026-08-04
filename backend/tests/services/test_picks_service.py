@@ -182,6 +182,10 @@ def test_generate_picks_ranks_buy_first_marks_held_and_creates_no_decision_or_or
     for p in out["picks"]:
         assert isinstance(p["quant_score"], float)
         assert "confidence" in p and "chair_verdict" in p
+        # 完整四角色分析 + 空头反驳一并返回,供前端展开(无需再花一次 LLM)
+        assert set(p["committee"]) == {"technical", "fundamental", "sentiment", "bear"}
+        assert p["committee"]["technical"]["summary"] == "t"
+        assert p["bear_rebuttal"] == "rebuttal text"
 
     assert out["gemini_calls"] == 3  # 3 个候选,全部成功调用一次委员会
 

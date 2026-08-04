@@ -50,7 +50,9 @@ def generate_picks(
 
     返回 {as_of, n, picks, errors, skipped, gemini_calls}:
     - picks:每个 {symbol, quant_score, action, confidence, chair_verdict,
-      held, rank},已按 conviction 排好序(rank 从 1 开始)。
+      committee(四角色 summary), bear_rebuttal, held, rank},已按 conviction
+      排好序(rank 从 1 开始)。committee/bear_rebuttal 供前端展开看理由,不额外
+      触发 LLM(生成时已算出)。
     - errors:[{symbol, error}, ...],单只候选的材料/委员会故障记录在此,不影响
       其余候选。
     - skipped:筛选阶段抓取行情失败/无数据的标的([(symbol, reason), ...],
@@ -106,6 +108,11 @@ def generate_picks(
             "action": committee["action"],
             "confidence": committee["confidence"],
             "chair_verdict": committee["chair"]["verdict"][:MAX_CHAIR_VERDICT_LEN],
+            # 完整四角色分析 + 空头反驳:生成时本就算出来了,一并返回,前端可展开
+            # 查看理由,无需再花一次 LLM 重跑个股分析。run_committee 已把每段 clamp
+            # 到安全长度,这里原样透传。
+            "committee": committee["committee"],
+            "bear_rebuttal": committee["chair"]["bear_rebuttal"],
             "held": held,
         })
 

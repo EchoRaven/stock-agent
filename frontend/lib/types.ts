@@ -456,6 +456,10 @@ export interface Pick {
   action: "buy" | "sell" | "hold";
   confidence: number;
   chair_verdict: string;
+  /** Full four-role committee reasoning, returned with the pick (no extra LLM
+   * call) so a row can expand to show why — mirrors StockAnalysis.committee. */
+  committee: Record<CommitteeRoleKey, { summary: string }>;
+  bear_rebuttal: string;
   held: boolean;
 }
 

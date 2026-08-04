@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import { ApiError, apiPost } from "@/lib/api";
-import type { PicksResponse } from "@/lib/types";
+import type { CommitteeRoleKey, PicksResponse } from "@/lib/types";
 import { pct } from "@/lib/format";
 import { ErrorBanner, Th } from "@/components/ui";
 import { RegimeBanner } from "@/components/RegimeBanner";
@@ -32,6 +32,13 @@ function todayLocalISODate(): string {
 
 const ACTION_LABELS: Record<string, string> = { buy: "买入", sell: "卖出", hold: "观望" };
 
+const ROLE_LABELS: Array<[CommitteeRoleKey, string]> = [
+  ["technical", "技术面"],
+  ["fundamental", "基本面"],
+  ["sentiment", "情绪面"],
+  ["bear", "空头"],
+];
+
 const ACTION_STYLES: Record<string, string> = {
   buy: "bg-emerald-100 text-emerald-800 border border-emerald-300",
   sell: "bg-red-100 text-red-800 border border-red-300",
@@ -50,6 +57,16 @@ export default function PicksPage() {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  function toggleExpanded(symbol: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol);
+      else next.add(symbol);
+      return next;
+    });
+  }
 
   // Hydrate the last cached result on mount (client-only — localStorage isn't
   // available during SSR). Corrupt/absent cache is ignored, never fatal.
@@ -156,48 +173,83 @@ export default function PicksPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {result.picks.map((p) => (
-                    <tr
-                      key={p.symbol}
-                      className={p.action === "buy" ? "bg-emerald-50/50" : undefined}
-                    >
-                      <td className="px-3 py-2 tabular-nums">{p.rank}</td>
-                      <td className="px-3 py-2 font-medium">
-                        <Link
-                          href={`/stock/${p.symbol}`}
-                          className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
-                        >
-                          {p.symbol}
-                        </Link>
-                        {p.held && (
-                          <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
-                            持有
-                          </span>
+                  {result.picks.map((p) => {
+                    const isOpen = expanded.has(p.symbol);
+                    return (
+                      <Fragment key={p.symbol}>
+                        <tr className={p.action === "buy" ? "bg-emerald-50/50" : undefined}>
+                          <td className="px-3 py-2 tabular-nums">{p.rank}</td>
+                          <td className="px-3 py-2 font-medium">
+                            <Link
+                              href={`/stock/${p.symbol}`}
+                              className="text-slate-900 underline decoration-slate-300 underline-offset-2 hover:text-indigo-700 hover:decoration-indigo-400"
+                            >
+                              {p.symbol}
+                            </Link>
+                            {p.held && (
+                              <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                                持有
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                ACTION_STYLES[p.action] ?? ACTION_STYLES.hold
+                              }`}
+                            >
+                              {ACTION_LABELS[p.action] ?? p.action}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {pct(p.confidence, 0)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {p.quant_score.toFixed(4)}
+                          </td>
+                          {/* 点击展开完整委员会理由(生成时已算好,展开不额外调用 LLM) */}
+                          <td className="max-w-md px-3 py-2 text-slate-600">
+                            <button
+                              onClick={() => toggleExpanded(p.symbol)}
+                              className="flex w-full items-start gap-1.5 text-left hover:text-indigo-700"
+                              aria-expanded={isOpen}
+                            >
+                              <span className="mt-0.5 shrink-0 text-slate-400">
+                                {isOpen ? "▾" : "▸"}
+                              </span>
+                              <span className={isOpen ? "" : "truncate"} title={p.chair_verdict}>
+                                {truncate(p.chair_verdict || "", CHAIR_VERDICT_SNIPPET_LEN) || "—"}
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="bg-slate-50/70">
+                            <td colSpan={6} className="px-3 py-3">
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                {ROLE_LABELS.map(([key, label]) => (
+                                  <div key={key}>
+                                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                      {label}
+                                    </div>
+                                    <p className="text-sm text-slate-700">
+                                      {p.committee[key]?.summary || "—"}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="mt-2 border-t border-slate-200 pt-2">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                  主席对空头的回应
+                                </div>
+                                <p className="text-sm text-slate-700">{p.bear_rebuttal || "—"}</p>
+                              </div>
+                            </td>
+                          </tr>
                         )}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                            ACTION_STYLES[p.action] ?? ACTION_STYLES.hold
-                          }`}
-                        >
-                          {ACTION_LABELS[p.action] ?? p.action}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {pct(p.confidence, 0)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {p.quant_score.toFixed(4)}
-                      </td>
-                      <td
-                        className="max-w-md truncate px-3 py-2 text-slate-600"
-                        title={p.chair_verdict}
-                      >
-                        {truncate(p.chair_verdict || "", CHAIR_VERDICT_SNIPPET_LEN) || "—"}
-                      </td>
-                    </tr>
-                  ))}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
