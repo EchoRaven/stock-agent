@@ -9,6 +9,7 @@ stock-agent 的项目文档。**这里是团队文档的单一事实来源(singl
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **技术架构 / 技术路线**:系统组成、一次决策的数据流、决策核心、安全模型(红线)、技术栈、本地运行。 |
 | [ROADMAP.md](ROADMAP.md) | **技术路线图**:里程碑 M1–M9、已完成能力清单、进行中/计划、已知问题、路线图原则。 |
 | [PROGRESS.md](PROGRESS.md) | **进度文档**:当前状态、评测结论(含证据强度)、我们修正的自身错误、迭代日志、安全审查结论。 |
+| [DRIVE_SYNC_SETUP.md](DRIVE_SYNC_SETUP.md) | **自动同步到 Google Drive** 的一次性配置(GitHub Action + rclone)。 |
 
 ## 策略实验报告(诚实的负面结果为主)
 
