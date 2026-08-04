@@ -43,7 +43,14 @@ LLM 功能需在 `backend/.env` 设 `STOCKAGENT_GEMINI_API_KEY`(git-ignored)。
 ```
 backend/   FastAPI + FastMCP + SQLAlchemy/SQLite;app/{screener,backtest,risk,execution,services,factors,llm,api,mcp,store}
 frontend/  Next.js + TS + Tailwind + lightweight-charts;浏览器只同源调服务端代理(token 不进浏览器)
-docs/      设计 spec + 各轮策略实验的诚实报告
+docs/      项目文档(见 docs/README.md 索引)+ 各轮策略实验的诚实报告
 ```
+
+## 文档
+
+团队文档在 [`docs/`](docs/README.md)(随代码版本化的单一事实来源):
+- [技术架构 / 技术路线](docs/ARCHITECTURE.md) —— 系统组成、数据流、安全模型。
+- [技术路线图](docs/ROADMAP.md) —— 里程碑、已完成能力、下一步。
+- [进度文档](docs/PROGRESS.md) —— 当前状态、评测结论(含证据强度)、迭代日志。
 
 测试:`cd backend && uv run pytest -q`(660+ 离线用例;联网用例用 `-m network`)。
