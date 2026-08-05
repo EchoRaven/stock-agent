@@ -252,6 +252,33 @@ def test_memory_weighing_instruction_omitted_when_no_memory():
     assert "已平仓交易结果" not in client.prompts[0]
 
 
+def test_own_trade_history_shown_prominently_near_top_when_provided():
+    """M9 attempt#2:该票上次平仓结果单独摆在 prompt 顶部(持仓行之后、材料之前),
+    不埋在 memory 里。advisory——只改推理,不碰闸门。"""
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False,
+                  own_trade_history="AAPL 平仓 2025-03-31 -8.5%")
+    prompt = client.prompts[0]
+    assert "AAPL 平仓 2025-03-31 -8.5%" in prompt
+    assert "该股上次交易结果" in prompt
+    # 显眼 = 出现在结构化材料 JSON 之前
+    assert prompt.index("该股上次交易结果") < prompt.index("结构化材料")
+
+
+def test_own_trade_history_section_omitted_when_empty():
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False, own_trade_history="")
+    assert "该股上次交易结果" not in client.prompts[0]
+
+
+def test_own_trade_history_does_not_change_output_contract():
+    client = FakeGemini(_good_json())
+    result = run_committee(client, _briefing(), held=False,
+                           own_trade_history="TSLA 平仓 2025-04-01 -12.3%")
+    assert set(result) == {"committee", "chair", "action", "confidence"}
+    assert result["action"] in {"buy", "sell", "hold"}
+
+
 def test_memory_section_is_separate_from_untrusted_news_block():
     briefing = _briefing()
     client = FakeGemini(_good_json())

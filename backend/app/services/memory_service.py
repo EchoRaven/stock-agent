@@ -168,6 +168,20 @@ def _decision_line(row: DecisionRow) -> str:
     return f"- {row.as_of.isoformat()} {row.action} conf{row.confidence:.2f}{chair_part}"
 
 
+def latest_closed_trade_summary(session: Session, symbol: str) -> str:
+    """该票**最近一笔已平仓交易结果**的一句话摘要,给委员会 prompt 单独显眼摆出用
+    (M9 attempt#2:learning_ab 证实复盘埋在 memory_context 里委员会几乎不权衡,
+    需要把该票自己上次的结果单独、显眼地提出来)。取 kind=trade_review、按该 symbol
+    过滤的最高权重/最新一条,直接用它已经很凝练的 title(形如 "AAPL 平仓 2025-03-31
+    -2.4%")。无复盘 → 空串(调用方据此省略整节)。ADVISORY:只进 prompt 供委员会
+    推理,绝不进闸门/下单路径。"""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return ""
+    rows = get_entries(session, kind="trade_review", symbol=sym, limit=1)
+    return rows[0].title.strip() if rows else ""
+
+
 def get_committee_context(session: Session, symbol: str, *, max_insights: int = 6,
                           max_decisions: int = 3) -> str:
     """组装喂给委员会 prompt 的内部知识 + 该票历史决策文本块。

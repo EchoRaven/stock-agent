@@ -34,7 +34,7 @@ from app.llm.gemini import GeminiClient
 from app.screener.universe import DEFAULT_UNIVERSE
 from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
-from app.services.memory_service import get_committee_context
+from app.services.memory_service import get_committee_context, latest_closed_trade_summary
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.memory_repo import get_entries
 from scripts._health import GeminiUnavailable, require_gemini
@@ -55,12 +55,13 @@ def _wilson(k: int, n: int, z: float = 1.96):
     return (round(p, 3), round(max(0.0, center - half), 3), round(min(1.0, center + half), 3))
 
 
-def _run_condition(gemini, briefing, memory_context, reps):
+def _run_condition(gemini, briefing, memory_context, reps, own_trade_history=""):
     """同一材料上跑 reps 次,返回 (action 列表, 平均置信度, 买入次数)。
     买入次数是主指标(比例),配 Wilson 区间;买入倾向均值仅作辅参。"""
     actions, confs, buy_count = [], [], 0
     for _ in range(reps):
-        r = run_committee(gemini, briefing, held=False, memory_context=memory_context)
+        r = run_committee(gemini, briefing, held=False, memory_context=memory_context,
+                          own_trade_history=own_trade_history)
         actions.append(r["action"])
         confs.append(r["confidence"])
         if r["action"] == "buy":
@@ -68,15 +69,26 @@ def _run_condition(gemini, briefing, memory_context, reps):
     return actions, round(statistics.mean(confs), 3), buy_count
 
 
-def _eval_symbol(gemini, session, sym, providers, as_of, reps):
-    """返回 (with_buys, without_buys):该票在 WITH/WITHOUT 记忆两条件下的买入次数。"""
+def _eval_symbol(gemini, session, sym, providers, as_of, reps, prominent=False):
+    """返回 (with_buys, without_buys):该票在 WITH/WITHOUT 两条件下的买入次数。
+
+    默认(memory 通道):WITH = 完整 memory_context(复盘埋在里面);WITHOUT = 空。
+    --prominent(独立通道,M9 attempt#2):WITH = 该票上次平仓结果单独摆 prompt 顶部
+    (memory_context 置空以隔离该通道);WITHOUT = 都空。两模式的 WITHOUT 相同,
+    差异只在 WITH 怎么把"该票亏损"喂进去——从而干净对比"埋着" vs "显眼摆出"。
+    """
     price, news, funds = providers
-    mem = get_committee_context(session, sym)
     briefing = get_stock_briefing(sym, price, news, funds, as_of)
-    wa, wc, wbuys = _run_condition(gemini, briefing, mem, reps)
+    if prominent:
+        hist = latest_closed_trade_summary(session, sym)
+        wa, wc, wbuys = _run_condition(gemini, briefing, "", reps, own_trade_history=hist)
+        tag = f"prominent「{hist}」" if hist else "prominent(无复盘)"
+    else:
+        mem = get_committee_context(session, sym)
+        wa, wc, wbuys = _run_condition(gemini, briefing, mem, reps)
+        tag = f"memory {len(mem)} 字"
     na, nc, nbuys = _run_condition(gemini, briefing, "", reps)
-    print(f"\n  {sym:6s} (memory {len(mem)} 字)  买入次数 WITH {wbuys}/{reps} · "
-          f"WITHOUT {nbuys}/{reps}")
+    print(f"\n  {sym:6s} ({tag})  买入次数 WITH {wbuys}/{reps} · WITHOUT {nbuys}/{reps}")
     return wbuys, nbuys
 
 
@@ -107,6 +119,9 @@ def main(argv=None) -> int:
     ap.add_argument("--inject", default="",
                     help="逗号分隔的标的,注入合成亏损复盘作 treatment(加功率用;"
                          "建议指向一份 replay_loop.db 的**副本**,别污染原库)")
+    ap.add_argument("--prominent", action="store_true",
+                    help="M9 attempt#2:把该票上次平仓结果单独显眼摆 prompt 顶部(独立通道)"
+                         "而非埋在 memory 里,对比是否让委员会更权衡自己的亏损")
     args = ap.parse_args(argv)
 
     settings = get_settings()
@@ -147,10 +162,14 @@ def main(argv=None) -> int:
         print(f"评估日 {as_of} · 每条件 {args.reps} 次 · "
               f"treatment(有复盘) {treatment} · control(无复盘) {controls}")
 
+        chan = "独立显眼通道(prominent)" if args.prominent else "memory 通道(埋在记忆里)"
+        print(f"复盘喂入方式:{chan}")
         print("\n【treatment:有自己交易复盘的标的】")
-        t = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in treatment]
+        t = [_eval_symbol(gemini, session, s, providers, as_of, args.reps, args.prominent)
+             for s in treatment]
         print("\n【control:池内无复盘的标的】")
-        c = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in controls]
+        c = [_eval_symbol(gemini, session, s, providers, as_of, args.reps, args.prominent)
+             for s in controls]
 
         def _pool(rows):  # rows: [(with_buys, without_buys), ...] → 汇总买入次数
             n = len(rows) * args.reps

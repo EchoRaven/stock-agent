@@ -6,10 +6,11 @@ import json
 
 import pytest
 
-from app.services.memory_service import SEED_ENTRIES, ensure_seeded, get_committee_context
+from app.services.memory_service import (SEED_ENTRIES, ensure_seeded, get_committee_context,
+                                         latest_closed_trade_summary)
 from app.store.db import init_db, make_engine, make_session_factory
 from app.store.repos.decision_repo import save_decision
-from app.store.repos.memory_repo import count_entries, get_entries
+from app.store.repos.memory_repo import add_entry, count_entries, get_entries
 
 D = dt.date(2026, 7, 20)
 
@@ -25,6 +26,23 @@ def session():
 # ---------------------------------------------------------------------------
 # ensure_seeded: 6 条真实结论,一次性、幂等。
 # ---------------------------------------------------------------------------
+
+
+def test_latest_closed_trade_summary_returns_title_of_most_recent(session):
+    """M9 attempt#2 的独立通道:返回该票最近一笔 trade_review 的凝练 title;
+    无复盘 → 空串;不受其它票的复盘干扰。"""
+    add_entry(session, "trade_review", "AAPL 平仓 2025-03-20 -3.0%", "body...",
+              symbol="AAPL", weight=1.0)
+    add_entry(session, "trade_review", "AAPL 平仓 2025-03-31 -8.5%", "body...",
+              symbol="AAPL", weight=2.0)  # 更高权重 → 应被选中
+    add_entry(session, "trade_review", "MSFT 平仓 2025-03-25 +4.0%", "body...",
+              symbol="MSFT", weight=1.0)
+    session.commit()
+
+    assert latest_closed_trade_summary(session, "AAPL") == "AAPL 平仓 2025-03-31 -8.5%"
+    assert latest_closed_trade_summary(session, "msft") == "MSFT 平仓 2025-03-25 +4.0%"
+    assert latest_closed_trade_summary(session, "NVDA") == ""  # 无复盘
+    assert latest_closed_trade_summary(session, "") == ""
 
 
 def test_seed_entries_has_six_real_conclusions():
