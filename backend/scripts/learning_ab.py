@@ -22,6 +22,7 @@ Usage:
 import argparse
 import datetime as dt
 import math
+import os
 import statistics
 import sys
 
@@ -30,7 +31,7 @@ from app.data.cache import CachedPriceProvider
 from app.data.fundamentals_edgar import EdgarFundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
-from app.llm.gemini import GeminiClient
+from app.llm.factory import make_committee_client
 from app.screener.universe import DEFAULT_UNIVERSE
 from app.services.briefing_service import get_stock_briefing
 from app.services.committee_service import run_committee
@@ -119,21 +120,26 @@ def main(argv=None) -> int:
     ap.add_argument("--inject", default="",
                     help="逗号分隔的标的,注入合成亏损复盘作 treatment(加功率用;"
                          "建议指向一份 replay_loop.db 的**副本**,别污染原库)")
+    ap.add_argument("--model", default="",
+                    help="换更强模型走网关(如 gpt-5-5-genai-responses / fireworks-deepseek-v4-pro);"
+                         "需先 source MODEL_KEYS.local.env。留空=用默认 gemini")
     ap.add_argument("--prominent", action="store_true",
                     help="M9 attempt#2:把该票上次平仓结果单独显眼摆 prompt 顶部(独立通道)"
                          "而非埋在 memory 里,对比是否让委员会更权衡自己的亏损")
     args = ap.parse_args(argv)
 
     settings = get_settings()
-    if not settings.gemini_api_key:
-        print("没有 STOCKAGENT_GEMINI_API_KEY", file=sys.stderr)
-        return 2
+    if args.model:
+        os.environ["STOCKAGENT_LLM_PROVIDER"] = "gateway"
+        os.environ["STOCKAGENT_LLM_MODEL"] = args.model
     providers = (CachedPriceProvider(YFinancePriceProvider(), settings.cache_dir),
                  build_news_provider(settings),
                  EdgarFundamentalsProvider(settings.edgar_user_agent))
-    gemini = GeminiClient()
+    gemini = make_committee_client()  # 按 STOCKAGENT_LLM_PROVIDER/--model 选,默认 gemini
+    print(f"委员会 LLM provider = {os.environ.get('STOCKAGENT_LLM_PROVIDER','gemini')}"
+          f":{os.environ.get('STOCKAGENT_LLM_MODEL','(gemini default)')}")
     try:
-        require_gemini(gemini)
+        require_gemini(gemini)  # 探活:任意 client 都跑 generate_json
     except GeminiUnavailable as exc:
         print(f"⛔ {exc}", file=sys.stderr)
         return 3
