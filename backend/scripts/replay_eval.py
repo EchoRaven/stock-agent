@@ -55,6 +55,7 @@ Usage:
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 
 from app.config import get_settings
@@ -62,7 +63,7 @@ from app.data.cache import CachedPriceProvider
 from app.data.fundamentals_edgar import EdgarFundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
-from app.llm.gemini import GeminiClient
+from app.llm.factory import make_committee_client
 from app.screener.universe import DEFAULT_UNIVERSE
 from app.services.analysis_service import run_screen_on_bars
 from app.services.briefing_service import get_stock_briefing
@@ -236,7 +237,13 @@ def main(argv=None) -> int:
                         help="只打印计划与成本,不建库、不调用 LLM")
     parser.add_argument("--report-only", action="store_true",
                         help="不再回放,直接对已有评测库出报告")
+    parser.add_argument("--model", default="",
+                        help="换更强模型走网关(如 gpt-5-5-genai-responses);需先 "
+                             "source MODEL_KEYS.local.env。留空=默认 gemini")
     args = parser.parse_args(argv)
+    if args.model:
+        os.environ["STOCKAGENT_LLM_PROVIDER"] = "gateway"
+        os.environ["STOCKAGENT_LLM_MODEL"] = args.model
 
     horizons = [int(x) for x in args.horizons.split(",") if x.strip().isdigit()] or [1, 5]
     if args.end_date:
@@ -259,14 +266,15 @@ def main(argv=None) -> int:
         return 0
 
     settings = get_settings()
-    if not settings.gemini_api_key and not args.report_only:
+    _provider = os.environ.get("STOCKAGENT_LLM_PROVIDER", "gemini")
+    if _provider == "gemini" and not settings.gemini_api_key and not args.report_only:
         print("没有配置 STOCKAGENT_GEMINI_API_KEY,无法回放委员会。", file=sys.stderr)
         return 2
 
     price_provider = CachedPriceProvider(YFinancePriceProvider(), settings.cache_dir)
     providers = (price_provider, build_news_provider(settings),
                  EdgarFundamentalsProvider(settings.edgar_user_agent))
-    gemini = GeminiClient() if settings.gemini_api_key else None
+    gemini = make_committee_client()
 
     engine = make_engine(args.db)
     init_db(engine)

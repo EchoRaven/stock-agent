@@ -43,6 +43,7 @@ Usage:
 """
 
 import argparse
+import os
 import datetime as dt
 import sys
 
@@ -51,7 +52,7 @@ from app.data.cache import CachedPriceProvider
 from app.data.fundamentals_edgar import EdgarFundamentalsProvider
 from app.data.news_factory import build_news_provider
 from app.data.prices_yfinance import YFinancePriceProvider
-from app.llm.gemini import GeminiClient
+from app.llm.factory import make_committee_client
 from app.services.reflection_service import reconstruct_closed_trades
 from app.services.trade_cycle_service import run_trade_cycle
 from app.store.db import init_db, make_engine, make_session_factory
@@ -116,7 +117,10 @@ def main(argv=None) -> int:
                         help="逗号分隔的股票池(小池子更易产生往返)")
     parser.add_argument("--dry-run", action="store_true", help="只打印计划,不建库不调 LLM")
     parser.add_argument("--report-only", action="store_true", help="不再模拟,直接汇总已有库")
+    parser.add_argument("--model", default="", help="换更强模型走网关(需 source MODEL_KEYS.local.env);空=gemini")
     args = parser.parse_args(argv)
+    if args.model:
+        os.environ["STOCKAGENT_LLM_PROVIDER"] = "gateway"; os.environ["STOCKAGENT_LLM_MODEL"] = args.model
 
     universe = [s.strip().upper() for s in args.universe.split(",") if s.strip()]
     start = dt.date.fromisoformat(args.start)
@@ -132,14 +136,14 @@ def main(argv=None) -> int:
         return 0
 
     settings = get_settings()
-    if not settings.gemini_api_key and not args.report_only:
+    if os.environ.get("STOCKAGENT_LLM_PROVIDER","gemini")=="gemini" and not settings.gemini_api_key and not args.report_only:
         print("没有配置 STOCKAGENT_GEMINI_API_KEY,无法跑委员会。", file=sys.stderr)
         return 2
 
     price_provider = CachedPriceProvider(YFinancePriceProvider(), settings.cache_dir)
     news_provider = build_news_provider(settings)
     funds_provider = EdgarFundamentalsProvider(settings.edgar_user_agent)
-    gemini = GeminiClient() if settings.gemini_api_key else None
+    gemini = make_committee_client()
 
     engine = make_engine(args.db)
     init_db(engine)
