@@ -80,6 +80,17 @@ def submit_decision(session: Session, payload, prices: dict | None = None,
     """校验 → 从 DB 读 mode(唯一真相)→ 落库 → 按模式分流订单。
 
     now_utc 可注入(测试确定性,与 watchdog/circuit_breaker 同款时间注入模式)。
+
+    ⚠️ Finding A(安全模型里唯一一处靠纵深防御、而非局部不变量守的地方):
+    本函数**信任并直接透传调用方给的 `shares`**(见下方 handle_decision 调用),
+    并不在这里服务端重算或校验它。字面红线#2「股数永远服务端算」靠的是**下游兜底**——
+    买入超限被 RiskGate 的单票/总仓上限规则拒单、卖出被 PaperBroker._execute 的
+    `min(order.shares, held)` 封顶。因此 contained(无现实 exploit),我们没做高风险
+    的 sizing 契约重构,而是用回归测试把遏制性质钉死:
+      tests/services/test_decision_service_m3.py::test_finding_a_oversized_buy_shares_cannot_exceed_single_position_cap
+      tests/services/test_decision_service_m3.py::test_finding_a_oversized_sell_shares_cannot_oversell
+    **改动 RiskGate 或 settle_open 逻辑的人注意**:你可能在不知情下拆掉这层兜底——
+    上面两个测试会变红,别绕过它们,先读 docs/ROADMAP「已知问题」的 Finding A。
     """
     normalized = validate_decision(payload)
     mode = get_mode(session)  # fail-safe:未知/未设 → advisory
