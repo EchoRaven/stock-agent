@@ -252,6 +252,24 @@ def test_memory_weighing_instruction_omitted_when_no_memory():
     assert "已平仓交易结果" not in client.prompts[0]
 
 
+def test_calibration_default_is_live_section_relaxed_only_via_env(monkeypatch):
+    """线上默认用 _CALIBRATION_SECTION(行为不变);只有 STOCKAGENT_CALIBRATION=relaxed
+    才切 relaxed 版——保证换强模型的实验不动线上 Gemini。"""
+    monkeypatch.delenv("STOCKAGENT_CALIBRATION", raising=False)
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False)
+    default_prompt = client.prompts[0]
+    assert "说不出具体优势就给 hold" in default_prompt          # 默认版特征句
+    assert "buy 和 hold 都应是常见" not in default_prompt
+
+    monkeypatch.setenv("STOCKAGENT_CALIBRATION", "relaxed")
+    client2 = FakeGemini(_good_json())
+    run_committee(client2, _briefing(), held=False)
+    relaxed_prompt = client2.prompts[0]
+    assert "buy 和 hold 都应是常见" in relaxed_prompt            # relaxed 版特征句
+    assert "confidence 应当明显拉开" in relaxed_prompt
+
+
 def test_own_trade_history_shown_prominently_near_top_when_provided():
     """M9 attempt#2:该票上次平仓结果单独摆在 prompt 顶部(持仓行之后、材料之前),
     不埋在 memory 里。advisory——只改推理,不碰闸门。"""

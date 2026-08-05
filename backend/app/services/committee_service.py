@@ -19,6 +19,7 @@ decision_service.validate_decision 对 committee/chair/action/confidence 的
 """
 import json
 import logging
+import os
 
 from app.services.decision_service import ACTIONS, ROLE_KEYS
 
@@ -98,6 +99,33 @@ _CALIBRATION_SECTION = (
     "bear_rebuttal 必须逐条回应空头提出的具体理由,不能只写一句「风险可控」。\n"
 )
 
+# relaxed 校准(2026-08 加):默认版的「说不出相对其他候选的优势就 hold」是为了压住
+# **弱模型(Gemini)的乱买**;换上听话的强模型(gpt-5.5)后,它把这条当真执行 → 过度
+# 保守、~98% hold、几乎不给推荐(见 memory findings ⑱)。relaxed 版改为**对每只票独立
+# 做风险回报判断**,buy/hold 都应常见、confidence 在候选间拉开——目标仍是**区分度**
+# (买好的、放过平庸的),不是把 permabear 换回 permabull。仅在评测里由环境变量
+# STOCKAGENT_CALIBRATION=relaxed 启用,**线上默认不变**;若换 gpt-5.5 上线再改默认。
+_CALIBRATION_RELAXED = (
+    "决策校准要求(重要):\n"
+    "- 候选是量化动量筛选过的强势票,「近期走势强」是这批的共同基线,不单独构成买入理由。\n"
+    "- **对每只票独立判断**:综合技术/基本面/情绪/风险,若证据支持它是一个**风险回报合理"
+    "的买入**就给 buy;证据不足、风险偏大、或看不清就给 hold。**buy 和 hold 都应是常见"
+    "结论——不要一味 hold(错过合理机会),也不要一味 buy(丢掉区分度)。**\n"
+    "- confidence 用满 0 到 1 如实表达把握:0.2-0.4=证据薄弱;0.5=说不清;0.6-0.7=有一定"
+    "依据;0.8 以上=证据充分且能明确说出理由。**同一批候选里不同票的把握本就不同,"
+    "confidence 应当明显拉开,不要都挤在一个值。**\n"
+    "- 空头(bear)的质疑必须被认真对待:主席若给出与空头相反的裁决,bear_rebuttal 必须"
+    "逐条回应空头提出的具体理由,不能只写一句「风险可控」。\n"
+)
+
+
+def _active_calibration() -> str:
+    """线上默认 _CALIBRATION_SECTION(行为不变);评测设 STOCKAGENT_CALIBRATION=relaxed
+    时用 relaxed 版(给强模型松绑,别过度保守)。与 LLM provider 同款环境驱动做法。"""
+    if os.environ.get("STOCKAGENT_CALIBRATION", "").strip().lower() == "relaxed":
+        return _CALIBRATION_RELAXED
+    return _CALIBRATION_SECTION
+
 # M9 attempt#2(2026-08):把该票**自己上次的平仓结果**单独、显眼地摆在 prompt 顶部
 # (紧跟持仓行,在材料之前),而不是埋在 memory_context 的 2000+ 字里——learning_ab
 # 证实埋着时委员会几乎不权衡它(WITH/WITHOUT 买入率区间重叠)。仍 advisory(只改
@@ -140,7 +168,7 @@ def _build_prompt(briefing: dict, held: bool, memory_context: str = "",
         news_block=briefing.get("news_block", ""),
         memory_section=memory_section,
         market_section=market_section,
-        calibration_section=_CALIBRATION_SECTION,
+        calibration_section=_active_calibration(),
     )
 
 
