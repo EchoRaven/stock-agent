@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import datetime as dt
+import math
 import statistics
 import sys
 
@@ -42,29 +43,59 @@ from scripts._health import GeminiUnavailable, require_gemini
 _ACTION_SIGN = {"buy": 1.0, "hold": 0.0, "sell": -1.0}
 
 
+def _wilson(k: int, n: int, z: float = 1.96):
+    """二项比例的 Wilson 95% 置信区间。小样本上比正态近似稳。返回 (p, lo, hi)。
+    跨项目教训(见 Idea/_INDEX):小 n 上的漂亮点估计最容易被当成硬结论,必须配区间。"""
+    if n == 0:
+        return (0.0, 0.0, 1.0)
+    p = k / n
+    d = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (round(p, 3), round(max(0.0, center - half), 3), round(min(1.0, center + half), 3))
+
+
 def _run_condition(gemini, briefing, memory_context, reps):
-    """同一材料上跑 reps 次,返回 (action 列表, 平均置信度, 平均买入倾向分)。"""
-    actions, confs, buys = [], [], []
+    """同一材料上跑 reps 次,返回 (action 列表, 平均置信度, 买入次数)。
+    买入次数是主指标(比例),配 Wilson 区间;买入倾向均值仅作辅参。"""
+    actions, confs, buy_count = [], [], 0
     for _ in range(reps):
         r = run_committee(gemini, briefing, held=False, memory_context=memory_context)
         actions.append(r["action"])
         confs.append(r["confidence"])
-        # 买入倾向 = sign(action) × confidence;越低越不敢买
-        buys.append(_ACTION_SIGN.get(r["action"], 0.0) * r["confidence"])
-    return actions, round(statistics.mean(confs), 3), round(statistics.mean(buys), 3)
+        if r["action"] == "buy":
+            buy_count += 1
+    return actions, round(statistics.mean(confs), 3), buy_count
 
 
 def _eval_symbol(gemini, session, sym, providers, as_of, reps):
+    """返回 (with_buys, without_buys):该票在 WITH/WITHOUT 记忆两条件下的买入次数。"""
     price, news, funds = providers
     mem = get_committee_context(session, sym)
     briefing = get_stock_briefing(sym, price, news, funds, as_of)
-    wa, wc, wb = _run_condition(gemini, briefing, mem, reps)
-    na, nc, nb = _run_condition(gemini, briefing, "", reps)
-    print(f"\n  {sym:6s} (memory {len(mem)} 字)")
-    print(f"    WITH 记忆 : action {wa} 置信度均 {wc}  买入倾向 {wb:+.3f}")
-    print(f"    WITHOUT   : action {na} 置信度均 {nc}  买入倾向 {nb:+.3f}")
-    print(f"    Δ买入倾向(WITH-WITHOUT) = {wb - nb:+.3f}")
-    return wb - nb  # 负 = 有记忆后更不敢买
+    wa, wc, wbuys = _run_condition(gemini, briefing, mem, reps)
+    na, nc, nbuys = _run_condition(gemini, briefing, "", reps)
+    print(f"\n  {sym:6s} (memory {len(mem)} 字)  买入次数 WITH {wbuys}/{reps} · "
+          f"WITHOUT {nbuys}/{reps}")
+    return wbuys, nbuys
+
+
+def _inject_synthetic_review(session, symbol, idx):
+    """给 symbol 注入一条与 reflect_on_closed_trades 同格式的**合成亏损复盘**,
+    让 learning_ab 能把 treatment 样本便宜地扩到 8-10 只(不用真跑那么多交易)。
+    亏损幅度按 idx 递变(-4% ~ -18%),更真实。格式严格对齐真实复盘,get_committee_
+    context 读起来与真的无差。"""
+    from app.store.repos.memory_repo import add_entry
+    loss_pct = -(4.0 + 2.0 * idx)          # -4, -6, -8, ...
+    loss_pct = max(loss_pct, -18.0)
+    pnl = loss_pct / 100.0 * 12000          # 假一个美元亏损额,量级合理即可
+    title = f"{symbol} 平仓 2025-03-28 {loss_pct:+.1f}%"
+    body = (f"已实现盈亏 {pnl:+.0f}({loss_pct:+.1f}%)。买入理由:动量走强、看似向上突破;"
+            f"卖出理由:追高后回落、买入理由未兑现。教训:在 {symbol} 上追强势买入,"
+            f"随后的回撤把浮盈和部分本金一起吃掉了——同样的形态下次要额外小心。")
+    add_entry(session, "trade_review", title, body, symbol=symbol,
+              evidence={"sell_fill_id": 900000 + idx, "realized_pnl_pct": loss_pct},
+              source="synthetic")
 
 
 def main(argv=None) -> int:
@@ -73,6 +104,9 @@ def main(argv=None) -> int:
     ap.add_argument("--as-of", default="2025-04-07", help="评估日(复盘之后的某个交易日)")
     ap.add_argument("--reps", type=int, default=3, help="每个条件重复次数(压随机性)")
     ap.add_argument("--controls", type=int, default=2, help="对照标的数(池中无复盘的票)")
+    ap.add_argument("--inject", default="",
+                    help="逗号分隔的标的,注入合成亏损复盘作 treatment(加功率用;"
+                         "建议指向一份 replay_loop.db 的**副本**,别污染原库)")
     args = ap.parse_args(argv)
 
     settings = get_settings()
@@ -93,6 +127,17 @@ def main(argv=None) -> int:
     engine = make_engine(args.db)
     init_db(engine)
     with make_session_factory(engine)() as session:
+        inject = [s.strip().upper() for s in args.inject.split(",") if s.strip()]
+        if inject:
+            existing = {e.symbol for e in get_entries(session, kind="trade_review")}
+            n = 0
+            for i, sym in enumerate(inject):
+                if sym in existing:
+                    continue  # 已有真实复盘的不重复注入
+                _inject_synthetic_review(session, sym, i)
+                n += 1
+            session.commit()
+            print(f"已注入 {n} 条合成亏损复盘作 treatment(源=synthetic)")
         treatment = sorted({e.symbol for e in get_entries(session, kind="trade_review") if e.symbol})
         if not treatment:
             print("库里没有 trade_review 标的,先跑 replay_loop 产生复盘。", file=sys.stderr)
@@ -103,29 +148,47 @@ def main(argv=None) -> int:
               f"treatment(有复盘) {treatment} · control(无复盘) {controls}")
 
         print("\n【treatment:有自己交易复盘的标的】")
-        t_deltas = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in treatment]
+        t = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in treatment]
         print("\n【control:池内无复盘的标的】")
-        c_deltas = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in controls]
+        c = [_eval_symbol(gemini, session, s, providers, as_of, args.reps) for s in controls]
 
-        t_mean = round(statistics.mean(t_deltas), 3) if t_deltas else None
-        c_mean = round(statistics.mean(c_deltas), 3) if c_deltas else None
-        print("\n" + "=" * 68)
-        print("difference-in-differences(隔离复盘因果效应)")
-        print("=" * 68)
-        print(f"  treatment 平均 Δ买入倾向 = {t_mean}  (有复盘的票,读记忆前后)")
-        print(f"  control   平均 Δ买入倾向 = {c_mean}  (无复盘的票,读记忆前后)")
-        if t_mean is not None and c_mean is not None:
-            did = round(t_mean - c_mean, 3)
-            print(f"  DiD = treatment - control = {did:+.3f}")
-            if did < -0.1:
-                verdict = "复盘让委员会对该票明显更谨慎 → 学习效应初步可见(弱证据)"
-            elif did > 0.1:
-                verdict = "反常:有复盘反而更敢买 → 需查复盘是否被正确读取/框定"
-            else:
-                verdict = "无明显差异 → 闭环通电但委员会对自己的复盘几乎无响应(这才是真问题)"
-            print(f"  读数: {verdict}")
-        print("\n  ⚠ 样本极小(N复盘票少、reps少、单一评估日)——机制探针,非结论。"
-              "\n  ⚠ WITH 条件含通用播种知识,DiD 用 control 扣除其影响,但残留噪声仍大。")
+        def _pool(rows):  # rows: [(with_buys, without_buys), ...] → 汇总买入次数
+            n = len(rows) * args.reps
+            return sum(r[0] for r in rows), sum(r[1] for r in rows), n
+
+        tw, two, tn = _pool(t)
+        cw, cwo, cn = _pool(c)
+        print("\n" + "=" * 72)
+        print("买入率(比例 + Wilson 95% 区间)—— 复盘是否压低了买入")
+        print("=" * 72)
+
+        def _line(label, k, n):
+            p, lo, hi = _wilson(k, n)
+            print(f"  {label:22s} 买入 {k:3d}/{n:<3d} = {p:.2f}  [95%CI {lo:.2f}, {hi:.2f}]")
+            return p, lo, hi
+
+        twp = _line("treatment · WITH记忆", tw, tn)
+        twop = _line("treatment · WITHOUT ", two, tn)
+        cwp = _line("control   · WITH记忆", cw, cn)
+        cwop = _line("control   · WITHOUT ", cwo, cn)
+
+        t_drop = round(twp[0] - twop[0], 3)   # 负 = WITH 记忆后买得更少
+        c_drop = round(cwp[0] - cwop[0], 3)
+        did = round(t_drop - c_drop, 3)
+        print(f"\n  treatment 买入率变化(WITH−WITHOUT) = {t_drop:+.3f}")
+        print(f"  control   买入率变化(WITH−WITHOUT) = {c_drop:+.3f}")
+        print(f"  DiD = {did:+.3f}")
+        # 诚实判读:只有当 treatment 的 WITH 区间与 WITHOUT 区间**分离**、且比 control
+        # 降得更多,才算复盘真的压低了买入。区间重叠 = 测不出效应。
+        separated = twp[2] < twop[1] or twp[1] > twop[2]  # treatment WITH vs WITHOUT 区间不重叠
+        if separated and did < 0:
+            verdict = "treatment 的 WITH/WITHOUT 区间分离且 DiD<0 → 复盘确实压低了买入(初步证据)"
+        else:
+            verdict = ("treatment 的 WITH/WITHOUT 区间**重叠** → 在此样本下测不出复盘对买入的影响"
+                       "(不是'确证无效',是'区间没分开')")
+        print(f"  读数: {verdict}")
+        print(f"\n  ⚠ 单一评估日({as_of})、reps={args.reps};区间已如实反映不确定性。"
+              "\n  ⚠ 合成复盘(注入)与真实复盘格式一致但非真实交易;treatment 含 2 只真实(AMD/JPM)。")
     return 0
 
 
