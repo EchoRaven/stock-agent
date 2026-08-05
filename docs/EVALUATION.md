@@ -65,6 +65,21 @@ uv run python -m scripts.learning_ab --db <副本> --prominent --reps 4 --contro
 
 ---
 
+## 2b. 换模型跑评测(可插拔 LLM)
+
+委员会 LLM 是可插拔的(`app/llm/factory.py`)。三个脚本都支持 `--model` 走 llama.com
+网关(**线上 deps 默认仍 Gemini**):
+```bash
+set -a; source /data1/common/haibotong/MODEL_KEYS.local.env; set +a   # 密钥,git 外
+# 决策形状 / 前瞻收益,换 gpt-5.5:
+uv run python -m scripts.replay_eval --dates 10 --top-k 5 --model gpt-5-5-genai-responses
+# 给强模型松绑校准(默认校准是补偿 Gemini 乱买的,强模型会过度保守):
+STOCKAGENT_CALIBRATION=relaxed uv run python -m scripts.replay_eval --model gpt-5-5-genai-responses ...
+```
+可用模型 ID 与坑见 `/data1/common/haibotong/MODEL_ACCESS_GUIDE.md`。要点:gpt-5.x 传
+temperature=0 会 400(客户端默认不发);reasoner 慢(~12s/次)且吃 token(max_tokens 32k)。
+**密钥只在 `MODEL_KEYS.local.env`(600,git 外),绝不进仓库。**
+
 ## 3. 护栏(踩过坑才加的)
 
 - **隔离**:所有脚本写独立 `--db`,绝不碰线上库。replay_loop 虽然跑完整下单/撮合,但只在隔离库里、隔离库自己的 mode/账户。
