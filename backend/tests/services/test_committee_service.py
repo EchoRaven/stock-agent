@@ -234,6 +234,24 @@ def test_prompt_includes_memory_context_when_provided():
     assert memory_context in prompt
 
 
+def test_memory_section_demands_weighing_own_prior_losses():
+    """M9:memory 段必须显式要求委员会权衡该票自己的已平仓亏损复盘(learning_ab
+    的 DiD≈0 证明旧框定太弱)。仍是 advisory——只强化推理要求,不碰闸门。"""
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False, memory_context="- 一些历史")
+    prompt = client.prompts[0]
+    assert "已平仓交易结果" in prompt  # 指向该票自己的往返结果
+    assert "亏损" in prompt and "重复" in prompt  # 别在同一只票上重复犯错
+    assert "与上次不同的、具体的" in prompt  # 上次亏了、这次买需给不同理由
+
+
+def test_memory_weighing_instruction_omitted_when_no_memory():
+    """无 memory 时整节省略,不平白多出权衡指令(controls 场景)。"""
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False, memory_context="")
+    assert "已平仓交易结果" not in client.prompts[0]
+
+
 def test_memory_section_is_separate_from_untrusted_news_block():
     briefing = _briefing()
     client = FakeGemini(_good_json())
