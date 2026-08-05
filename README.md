@@ -52,5 +52,6 @@ docs/      项目文档(见 docs/README.md 索引)+ 各轮策略实验的诚实�
 - [技术架构 / 技术路线](docs/ARCHITECTURE.md) —— 系统组成、数据流、安全模型。
 - [技术路线图](docs/ROADMAP.md) —— 里程碑、已完成能力、下一步。
 - [进度文档](docs/PROGRESS.md) —— 当前状态、评测结论(含证据强度)、迭代日志。
+- [评测工具链](docs/EVALUATION.md) —— 4 个评测脚本 + 评测纪律 + 护栏 + 已知偏差。
 
 测试:`cd backend && uv run pytest -q`(660+ 离线用例;联网用例用 `-m network`)。

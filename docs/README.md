@@ -9,6 +9,7 @@ stock-agent 的项目文档。**这里是团队文档的单一事实来源(singl
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **技术架构 / 技术路线**:系统组成、一次决策的数据流、决策核心、安全模型(红线)、技术栈、本地运行。 |
 | [ROADMAP.md](ROADMAP.md) | **技术路线图**:里程碑 M1–M9、已完成能力清单、进行中/计划、已知问题、路线图原则。 |
 | [PROGRESS.md](PROGRESS.md) | **进度文档**:当前状态、评测结论(含证据强度)、我们修正的自身错误、迭代日志、安全审查结论。 |
+| [EVALUATION.md](EVALUATION.md) | **评测工具链**:replay_eval / replay_loop / learning_ab / _health 四个脚本 + 四条评测纪律 + 护栏 + 已知偏差。 |
 
 ## 策略实验报告(诚实的负面结果为主)
 
