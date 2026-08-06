@@ -41,13 +41,53 @@ _PROMPT_TEMPLATE = (
     "{memory_section}"
     "{market_section}"
     "{calibration_section}"
+    "{rubric_section}"
     "严格以下面的 JSON 结构输出,不要输出其他任何文字(不要 markdown 代码块,"
     "不要解释):\n"
     '{{"committee":{{"technical":{{"summary":"..."}},"fundamental":{{"summary":"..."}},'
     '"sentiment":{{"summary":"..."}},"bear":{{"summary":"..."}}}},'
     '"chair":{{"verdict":"...","bear_rebuttal":"..."}},'
-    '"action":"buy|sell|hold","confidence":<0到1之间的数字>}}'
+    '"action":"buy|sell|hold"{scores_field},"confidence":<0到1之间的数字>}}'
 )
+
+# 结构化置信度 rubric(M10/attempt,2026-08):evaluation 证实 Gemini 与 gpt-5.5 的
+# confidence 都**扁平**(自由给 0-1 数字→挑个中间值,与该股好坏无关,且不预测收益)。
+# 根因不是模型,是"自由打分"。rubric 模式让委员会**先按固定维度打整数分**,由服务端
+# **算出** confidence(见 _confidence_from_scores),强制随各票的分数拉开。仅在评测里由
+# 环境变量 STOCKAGENT_CONFIDENCE=rubric 启用,**线上默认不变**;验证 confidence 是否
+# 终于拉开且预测收益后,再决定是否上线。ADVISORY 边界不变(只改 confidence 怎么来)。
+_RUBRIC_SECTION = (
+    "置信度打分要求(重要):除上述判断外,还要给出 scores——对以下四个维度各打一个 "
+    "**0 到 4 的整数**(只打整数,不同票分数应当不同,别都给中间值):\n"
+    "  trend=技术/趋势强度(4=强势明确突破,0=走弱/破位);\n"
+    "  fundamental=基本面质量(4=明显向好,0=恶化/无支撑);\n"
+    "  sentiment=情绪/新闻面(4=明显偏多,0=明显偏空);\n"
+    "  risk=下行风险(4=风险很高,0=风险很低)。\n"
+    "confidence 字段仍照常给(会被服务端按 scores 重算,但你仍需如实填一个)。\n"
+)
+
+
+def _rubric_on() -> bool:
+    return os.environ.get("STOCKAGENT_CONFIDENCE", "").strip().lower() == "rubric"
+
+
+def _confidence_from_scores(scores) -> float | None:
+    """由四维整数分算出置信度(买入把握度):三个正向维度均值做"看多强度",risk 做
+    衰减。强制随各票分数拉开,治"自由给数→都挤中间值"。scores 缺失/非法 → None(调用方
+    回退到模型自填的 confidence)。"""
+    if not isinstance(scores, dict):
+        return None
+    try:
+        t = float(scores["trend"]); f = float(scores["fundamental"])
+        s = float(scores["sentiment"]); r = float(scores["risk"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    for v in (t, f, s, r):
+        if not 0.0 <= v <= 4.0:
+            return None
+    bull = (t + f + s) / 12.0          # 0..1 看多强度
+    conf = bull * (1.0 - 0.5 * (r / 4.0))  # 风险最多把置信度腰斩
+    return round(max(0.05, min(0.98, conf)), 2)
 
 # 安全红线:memory_context 是我们自己写的内部知识(可信),不是外部材料——
 # 不用 app.data.sanitize.wrap_untrusted 的"不可信外部内容"定界包裹;这里单独
@@ -161,6 +201,7 @@ def _build_prompt(briefing: dict, held: bool, memory_context: str = "",
         _OWN_HISTORY_SECTION_TEMPLATE.format(own_trade_history=own_trade_history)
         if own_trade_history else ""
     )
+    rubric_on = _rubric_on()
     return _PROMPT_TEMPLATE.format(
         holding_line=_HELD_LINE if held else _NOT_HELD_LINE,
         own_history_section=own_history_section,
@@ -169,6 +210,9 @@ def _build_prompt(briefing: dict, held: bool, memory_context: str = "",
         memory_section=memory_section,
         market_section=market_section,
         calibration_section=_active_calibration(),
+        rubric_section=_RUBRIC_SECTION if rubric_on else "",
+        scores_field=(',"scores":{{"trend":<0-4>,"fundamental":<0-4>,'
+                      '"sentiment":<0-4>,"risk":<0-4>}}') if rubric_on else "",
     )
 
 
@@ -226,11 +270,18 @@ def _clamp_committee(raw, held: bool):
     bear_rebuttal = _clamp_text(raw_chair.get("bear_rebuttal"))
     if verdict is None or bear_rebuttal is None:
         return None
+    # 置信度:rubric 模式下优先用 scores 服务端算出的值(强制拉开);scores 缺失/非法
+    # 或非 rubric 模式 → 回退到模型自填的 confidence(clamp 到 [0,1])。
+    confidence = _clamp_confidence(raw.get("confidence"))
+    if _rubric_on():
+        from_scores = _confidence_from_scores(raw.get("scores"))
+        if from_scores is not None:
+            confidence = from_scores
     return {
         "committee": committee,
         "chair": {"verdict": verdict, "bear_rebuttal": bear_rebuttal},
         "action": _clamp_action(raw.get("action"), held),
-        "confidence": _clamp_confidence(raw.get("confidence")),
+        "confidence": confidence,
     }
 
 

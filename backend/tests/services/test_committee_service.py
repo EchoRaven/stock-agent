@@ -270,6 +270,48 @@ def test_calibration_default_is_live_section_relaxed_only_via_env(monkeypatch):
     assert "confidence 应当明显拉开" in relaxed_prompt
 
 
+def test_rubric_off_by_default_uses_model_confidence(monkeypatch):
+    """默认(非 rubric):prompt 不含 scores 要求,confidence 用模型自填值。线上不变。"""
+    monkeypatch.delenv("STOCKAGENT_CONFIDENCE", raising=False)
+    client = FakeGemini(_good_json(confidence=0.8))
+    result = run_committee(client, _briefing(), held=False)
+    assert "scores" not in client.prompts[0]
+    assert "置信度打分要求" not in client.prompts[0]
+    assert result["confidence"] == 0.8  # 模型自填,未被重算
+
+
+def test_rubric_mode_computes_confidence_from_scores_and_spreads(monkeypatch):
+    """rubric 模式:prompt 要求 scores;confidence 由服务端按分数算出(忽略模型自填),
+    高分票 vs 低分票明显拉开。"""
+    monkeypatch.setenv("STOCKAGENT_CONFIDENCE", "rubric")
+    strong = dict(_good_json(confidence=0.85))          # 模型自填 0.85
+    strong["scores"] = {"trend": 4, "fundamental": 4, "sentiment": 4, "risk": 0}
+    weak = dict(_good_json(confidence=0.85))            # 同样自填 0.85
+    weak["scores"] = {"trend": 1, "fundamental": 1, "sentiment": 1, "risk": 3}
+
+    r_strong = run_committee(FakeGemini(strong), _briefing(), held=False)
+    r_weak = run_committee(FakeGemini(weak), _briefing(), held=False)
+    # 服务端重算:强票高、弱票低,明显拉开(不再都挤 0.85)
+    assert r_strong["confidence"] > 0.9
+    assert r_weak["confidence"] < 0.2
+    assert r_strong["confidence"] - r_weak["confidence"] > 0.6
+
+
+def test_rubric_mode_prompt_requests_scores(monkeypatch):
+    monkeypatch.setenv("STOCKAGENT_CONFIDENCE", "rubric")
+    client = FakeGemini(_good_json())
+    run_committee(client, _briefing(), held=False)
+    assert "置信度打分要求" in client.prompts[0]
+    assert '"scores"' in client.prompts[0]
+
+
+def test_rubric_mode_falls_back_to_model_confidence_when_scores_missing(monkeypatch):
+    """rubric 模式但模型没给/给了非法 scores → 优雅回退到模型自填 confidence,不 fail-safe。"""
+    monkeypatch.setenv("STOCKAGENT_CONFIDENCE", "rubric")
+    result = run_committee(FakeGemini(_good_json(confidence=0.7)), _briefing(), held=False)
+    assert result["confidence"] == 0.7  # 无 scores → 回退
+
+
 def test_own_trade_history_shown_prominently_near_top_when_provided():
     """M9 attempt#2:该票上次平仓结果单独摆在 prompt 顶部(持仓行之后、材料之前),
     不埋在 memory 里。advisory——只改推理,不碰闸门。"""
